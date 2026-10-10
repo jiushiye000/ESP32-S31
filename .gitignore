@@ -1,0 +1,5 @@
+demo/a2dp_sink/build/
+demo/a2dp_sink/managed_components/
+demo/a2dp_sink/components/gen_bmgr_codes/
+demo/a2dp_sink/sdkconfig
+demo/a2dp_sink/sdkconfig.old
