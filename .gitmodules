@@ -1,0 +1,3 @@
+[submodule "esp-gmf"]
+	path = third_party/esp-gmf
+	url = https://github.com/espressif/esp-gmf.git
