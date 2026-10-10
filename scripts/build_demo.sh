@@ -6,8 +6,8 @@ root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 demo_dir="${root_dir}/demo/a2dp_sink"
 
 case "${DEMO_UI:-0}" in
-    0) build_dir="build"; config_path="sdkconfig"; defaults="sdkconfig.defaults.korvo1" ;;
-    1) build_dir="build-ui"; config_path="sdkconfig.ui"; defaults="sdkconfig.defaults.korvo1;sdkconfig.defaults.korvo1.ui" ;;
+    0) build_dir="build"; config_path="sdkconfig"; defaults="sdkconfig.defaults.korvo1;sdkconfig.defaults.debug" ;;
+    1) build_dir="build-ui"; config_path="sdkconfig.ui"; defaults="sdkconfig.defaults.korvo1;sdkconfig.defaults.debug;sdkconfig.defaults.korvo1.ui" ;;
     *) printf 'DEMO_UI must be 0 (headless) or 1 (screen).\n' >&2; exit 1 ;;
 esac
 
@@ -58,6 +58,17 @@ for required in 'CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT=y' 'CONFIG_CODEC_ES838
         exit 1
     fi
 done
+for module in HCI BTM L2CAP SDP GAP A2D AVDT AVCT AVRC APPL BTIF BTC OSI; do
+    required="CONFIG_BT_LOG_${module}_TRACE_LEVEL_DEBUG=y"
+    if ! grep -Fqx "${required}" "${config_path}"; then
+        printf 'Debug controls unavailable: missing %s in %s. Preserve the config and regenerate from complete defaults.\n' "${required}" "${config_path}" >&2
+        exit 1
+    fi
+done
+if ! grep -Fqx 'CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y' "${config_path}"; then
+    printf 'Debug controls require CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y in %s\n' "${config_path}" >&2
+    exit 1
+fi
 if [[ "${DEMO_UI:-0}" == "1" ]]; then
     for required in 'CONFIG_EXAMPLE_BT_UI_ENABLE=y' 'CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUPPORT=y' 'CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUB_RGB_SUPPORT=y' 'CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUPPORT=y' 'CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUB_I2C_SUPPORT=y' 'CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y'; do
         if ! grep -Fqx "${required}" "${config_path}"; then

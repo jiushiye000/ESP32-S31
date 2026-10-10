@@ -52,6 +52,7 @@
 #include "pool_reg.h"
 #include "stream_proc.h"
 #include "codec_defs.h"
+#include "bt_debug.h"
 
 #ifdef CONFIG_GMF_EXAMPLE_A2DP_SOURCE
 #define A2DP_SRC_SEND_TASK_CORE_ID     1
@@ -691,6 +692,9 @@ void app_main()
 
     /* Initialize all devices with board manager */
     ESP_ERROR_CHECK(esp_board_manager_init());
+
+    /* Install log policy before Bluetooth startup, independent of the UI. */
+    ESP_ERROR_CHECK(bt_debug_init());
 
     /* Initialize codec devices */
     esp_codec_dev_sample_info_t fs = {

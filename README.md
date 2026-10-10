@@ -107,3 +107,19 @@ disconnect
 后续再增加首包、首帧 PCM、Codec 写入时间戳和串口自动化测试。
 
 本次迁移的编译结果、版本和固件校验见 [编译验证记录](docs/BUILD_VERIFICATION.md)。
+
+## 屏幕与模块 Debug
+
+Korvo-1 屏幕版复用官方 LVGL UI，单独构建配置，不影响默认无屏版：
+
+```bash
+DEMO_UI=1 ./scripts/build_demo.sh
+DEMO_UI=1 ./scripts/flash_demo.sh /dev/ttyUSB0
+```
+
+Debug 页提供各协议模块的独立开关与 SD 文本日志保存设置，串口 `debug status`、
+`debug A2D on`、`debug sd on` 使用相同后端。无卡时继续串口输出，不格式化或覆盖卡。
+两个构建模式都编译保留 DEBUG，默认协议栈 WARN、应用 INFO；开启单个模块才提高级别。
+
+页面、现有配置迁移与上板步骤见 [UI 指南](docs/UI_GUIDE.md)，模块映射、SD 限制和
+框架扩展见 [Debug 指南](docs/DEBUG_GUIDE.md)。抗撕裂与 Media 改造仍是后续迭代。

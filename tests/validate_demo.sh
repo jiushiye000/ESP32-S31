@@ -14,6 +14,7 @@ required_files=(
     "${demo_dir}/main/CMakeLists.txt"
     "${demo_dir}/main/main.c"
     "${demo_dir}/sdkconfig.defaults.korvo1.ui"
+    "${demo_dir}/sdkconfig.defaults.debug"
     "${config_file}"
 )
 
@@ -57,7 +58,22 @@ for expected in 'CONFIG_EXAMPLE_BT_UI_ENABLE=y' 'CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=
     fi
 done
 
+for module in HCI BTM L2CAP SDP GAP A2D AVDT AVCT AVRC APPL BTIF BTC OSI; do
+    expected="CONFIG_BT_LOG_${module}_TRACE_LEVEL_DEBUG=y"
+    if ! grep -Fqx "${expected}" "${demo_dir}/sdkconfig.defaults.debug"; then
+        printf 'missing retained stack trace: %s\n' "${expected}" >&2
+        exit 1
+    fi
+done
+for expected in 'CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y' 'CONFIG_LOG_DEFAULT_LEVEL_INFO=y' 'CONFIG_LOG_DYNAMIC_LEVEL_CONTROL=y'; do
+    if ! grep -Fqx "${expected}" "${demo_dir}/sdkconfig.defaults.debug"; then
+        printf 'missing debug profile config: %s\n' "${expected}" >&2
+        exit 1
+    fi
+done
+
 cmake -DTEST_UI=OFF -P "${root_dir}/tests/check_ui_sources.cmake"
 cmake -DTEST_UI=ON -P "${root_dir}/tests/check_ui_sources.cmake"
+bash "${root_dir}/tests/test_debug.sh"
 
 printf 'demo structure and configuration checks passed\n'

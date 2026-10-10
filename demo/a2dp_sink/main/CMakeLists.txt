@@ -14,6 +14,7 @@ endif()
 set(reqs "bt" "nvs_flash" "console" "esp_board_manager" "esp_codec_dev" "esp_lvgl_port" "lvgl" "esp_jpeg")
 
 idf_component_register(SRCS "main.c" "pool_reg.c" "cmd_reg.c" "stream_proc.c"
+                    "bt_debug.c" "bt_debug_policy.c" "bt_debug_storage.c"
                     ${ui_srcs}
                     INCLUDE_DIRS "." "bt_ui"
                     REQUIRES ${reqs}

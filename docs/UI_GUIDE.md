@@ -8,9 +8,9 @@ ESP-GMF v1.0、Board Manager 0.7.3~1、esp_lvgl_port 2.9.0 和 LVGL 9.5.0。
 - Board Manager 初始化 Korvo-1 的 RGB LCD 和 GT1151 触摸，提供现成句柄。
 - `bt_ui_init()` 使用官方 `lvgl_port_add_disp_rgb()`、`lvgl_port_add_touch()`。
 - `bt_ui_media_create()` 是原例程播放器，继续提供歌曲信息和 AVRCP 控制。
-- 新增 Debug tab 只用 LVGL 自带的 tabview、label、button、list 和 timer。
+- Debug tab 只用 LVGL 自带的 tabview、label、button、switch、flex 和 timer。
 - 原媒体/封面更新沿用官方 LVGL port 锁；新诊断状态采用短临界区快照和
-  FreeRTOS 历史队列，LVGL timer 每 200 ms 刷新，未增加第二个 LVGL 调度任务。
+  LVGL timer 每 500 ms 刷新模块开关与存储状态，未增加第二个 LVGL 调度任务。
 
 官方入口：
 
@@ -29,7 +29,7 @@ DEMO_UI=1 ./scripts/build_demo.sh
 ```
 
 屏幕版使用 `build-ui/` 与 `sdkconfig.ui`，默认无屏版仍使用 `build/` 和
-`sdkconfig`。SDK defaults 是基础音频配置、UI overlay 与生成的官方板级
+`sdkconfig`。SDK defaults 是基础音频配置、Debug overlay、UI overlay 与生成的官方板级
 defaults；Board Manager 0.7.3~1 的 CLI 辅助回调只识别默认 `sdkconfig`，
 因此脚本显式把板级文件传给 IDF，并检查音频、LCD、RGB、触摸等支持。
 
@@ -63,42 +63,15 @@ DEMO_UI=1 ./scripts/flash_demo.sh /dev/ttyUSB0
 当前 A2DP Sink 基线没有 HFP，不显示拨号页；未启用 AVRCP Cover Art，
 播放器显示占位封面，歌曲标题/歌手是否提供取决于手机播放器。
 
-Debug 页显示：
+Debug 页现在是模块级控制面板，不在屏幕上滚动打印日志。A2DP、AVRCP、
+AVDTP、AVCTP、HCI、L2CAP、GAP、SDP、OSI 等独立开关，未编译模块灰显；
+下方显示连接/流/播放简要状态、SD 请求与实际存储状态、丢弃/截断计数及 NVS
+保存状态。开关与串口 `debug` 命令共用同一后端，并自动保存到 NVS。
 
-- 连接状态与最后一次对端地址（断开后保留地址，但明确显示 DISCONNECTED）。
-- ALLOCATED / STARTED / STOPPED / RELEASED 等流状态。
-- 输入 Codec、采样率、声道数、位宽与固定 DAC 输出采样率。
-  SDK 的 channels 字段是音频位置位图，显示前会计算实际声道数量。
-- AVRCP 播放状态、音量、最近 8 条关键事件及启动后微秒时间戳。
-- 历史队列丢失数量。当前状态有独立快照，不依赖历史队列是否丢失。
-
-输入格式未知时显示 UNKNOWN / 0，表示尚未收到有效格式，不是 0 Hz 的实际音频。
-音量来自最近一次蓝牙音量事件；当前串口 `vol_set/vol_up/vol_down` 不直接同步
-该显示值，因此本版上板音量回归以手机端调节为准。
-Debug 页不是完整串口日志镜像，也没有首包、首 PCM 或模拟输出测量。
-STARTED / PLAYING 不能证明扬声器正在出声。
-
-日志级别分为两层：屏幕版 `CONFIG_LOG_MAXIMUM_LEVEL=4` 保留 DEBUG，
-`CONFIG_LOG_DEFAULT_LEVEL=3` 默认只输出 INFO。屏幕按钮切换下列应用标签：
-
-```text
-BT_AUD_EXAMPLE  BT_AUD_CLASSIC  BT_AUD_AVRC_CT  BT_AUD_AVRC_TG
-STREAM_PROC    ESP_GMF_IO_BT   BT_UI
-```
-
-详细文本仍输出到串口；屏幕只显示精选状态事件。原串口命令继续可用：
-
-```text
-log_level BT_UI debug
-log_level BT_AUD_AVRC_CT debug
-log_level STREAM_PROC debug
-log_level * info
-```
-
-如确实需要逐音频包日志，可显式使用 `log_level BT_AUD_A2D_SINK debug`。
-这会增加打印负担，可能影响播放与时序，不应作为默认或性能测量配置。
-VERBOSE 超过本固件编译上限，命令会明确拒绝。Bluedroid 内部 trace 还有独立
-Kconfig 选项，应用标签 DEBUG 并不等于打开所有协议栈 trace。
+屏幕和无屏版都保留 ESP DEBUG=4 及 Bluedroid DEBUG trace=5，默认输出仍为
+应用 INFO、协议栈 WARN；开启一个模块才提高该模块实际 tag。逐包日志独立
+显式开启，不能当性能测量配置。详细使用、SD 边界和扩展方式见
+[模块 Debug 指南](DEBUG_GUIDE.md)。STARTED / PLAYING 仍不能证明物理出声。
 
 ## 从现有代码学习 LVGL
 
@@ -107,7 +80,7 @@ Kconfig 选项，应用标签 DEBUG 并不等于打开所有协议栈 trace。
 1. `bt_ui_init()`：理解 Board Manager 句柄与 LVGL port 的关系。
 2. `bt_ui_create()`：理解父子对象、tabview、页面布局。
 3. `bt_ui_media_create()`：观察 label、button、image、flex 与点击回调。
-4. `debug_create()` / `debug_refresh()`：观察 list、timer 与状态刷新。
+4. `debug_create()` / `debug_refresh()`：观察 switch、flex、timer 与状态刷新。
 5. `main.c` 的 `bt_audio_event_cb()`：追踪蓝牙回调怎样更新界面。
 
 先改一个 label 的文字或颜色，再调整布局，然后增加只读状态字段。
@@ -117,14 +90,14 @@ Kconfig 选项，应用标签 DEBUG 并不等于打开所有协议栈 trace。
 ## 上板回归（尚需硬件验证）
 
 1. 不连接手机启动：Debug 页可见，触摸切换 Media/Debug，无重启。
-2. 手机连接、断开和重连：地址正确，状态正确，断开后仍可查看 Debug。
+2. 手机连接、断开和重连：简要状态正确，断开后仍可查看 Debug。
 3. 播放/暂停/切歌：触摸按钮有效，手机通知更新状态，歌曲信息正常。
-4. 输入 44.1 kHz 与 48 kHz SBC 文件：格式和声道显示符合串口 Codec 信息，
-   正常立体声应为 2 ch；输出仍是当前基线的 48 kHz。
-5. 从手机调节音量：屏幕浮层和 Debug 值同步，声音速度与音量正常。
-6. 切换 App DEBUG：相关标签详细日志出现，恢复 INFO 后停止详细输出。
-7. 连续操作后断开：即使出现历史丢失计数，当前快照应显示最终断开状态。
+4. 输入 44.1 kHz 与 48 kHz SBC 文件：串口 Codec 信息正常，输出仍为基线 48 kHz。
+5. 从手机调节音量：屏幕浮层与听感正常。
+6. 按 [模块 Debug 指南](DEBUG_GUIDE.md) 验证独立开关、重启持久化、无卡与 SD。
+7. 连续操作后断开：当前简要状态应显示最终断开状态。
 8. 播放至少 10 分钟并反复切页：无音频明显卡顿、触摸卡死或异常重启。
 
 本机结构校验与编译不能替代这些测试，也没有给出 GUI 运行覆盖率。
-本次两种构建的具体结果见 [屏幕版编译验证](UI_BUILD_VERIFICATION.md)。
+本轮两种构建的具体结果见 [Debug 编译验证](DEBUG_BUILD_VERIFICATION.md)，
+首次 UI 迭代结果保留在 [历史编译验证](UI_BUILD_VERIFICATION.md)。

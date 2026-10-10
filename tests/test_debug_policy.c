@@ -72,7 +72,8 @@ int main(void)
     for (size_t i = 0; i < bt_debug_module_count(); ++i) {
         const bt_debug_module_t *module = bt_debug_module_at(i);
         assert(bt_debug_module_find(module->key) == (int)i);
-        assert(module->title && module->hint && module->tags[0]);
+        assert(module->title && module->hint && module->tags[0].tag);
+        assert(module->tags[7].tag == NULL); /* Registry tag lists must be terminated. */
         if (bt_debug_policy_supported(&policy, i)) {
             assert(bt_debug_policy_set(&policy, i, false));
             assert(bt_debug_policy_set(&policy, i, true));

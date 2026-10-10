@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -66,5 +67,58 @@ int main(int argc, char **argv)
     assert(!bt_debug_storage_flush(&storage));
     assert(storage.state == BT_DEBUG_SD_ERROR && storage.file == NULL);
     close(pipe_fds[0]);
+    bt_debug_storage_init(&storage, 0, 2);
+    assert(!bt_debug_storage_open(&storage, true, argv[1], 10));
+    bt_debug_storage_init(&storage, 16, 0);
+    assert(!bt_debug_storage_open(&storage, true, argv[1], 10));
+    bt_debug_storage_init(&storage, 16, 2);
+    assert(!bt_debug_storage_open(&storage, true, first_path, 10));
+    assert(storage.last_errno == ENOTDIR);
+
+    char test_path[256];
+    snprintf(test_path, sizeof(test_path), "%s/blocked", argv[1]);
+    assert(mkdir(test_path, 0775) == 0);
+    char blocker_path[288];
+    snprintf(blocker_path, sizeof(blocker_path), "%s/bt_logs", test_path);
+    file = fopen(blocker_path, "wb");
+    assert(file);
+    fclose(file);
+    assert(!bt_debug_storage_open(&storage, true, test_path, 10));
+    assert(storage.last_errno == ENOTDIR);
+    /* /proc is an existing directory whose filesystem rejects creating a log directory. */
+    assert(!bt_debug_storage_open(&storage, true, "/proc", 10));
+    assert(storage.state == BT_DEBUG_SD_ERROR);
+    char long_component[151];
+    memset(long_component, 'a', sizeof(long_component) - 1);
+    long_component[sizeof(long_component) - 1] = '\0';
+    snprintf(test_path, sizeof(test_path), "%s/%s", argv[1], long_component);
+    assert(mkdir(test_path, 0775) == 0);
+    assert(!bt_debug_storage_open(&storage, true, test_path, 10));
+    assert(storage.last_errno == ENAMETOOLONG);
+    for (uint32_t session = 500; session < 516; ++session) {
+        snprintf(test_path, sizeof(test_path), "%s/bt_logs/bt-%08" PRIx32 "-00.log", argv[1], session);
+        file = fopen(test_path, "wb");
+        assert(file);
+        fclose(file);
+    }
+    assert(!bt_debug_storage_open(&storage, true, argv[1], 500));
+    assert(storage.last_errno == EEXIST);
+    storage.file = fopen("/dev/full", "wb");
+    assert(storage.file);
+    assert(fputs("buffered", storage.file) >= 0);
+    assert(!bt_debug_storage_flush(&storage));
+    assert(storage.state == BT_DEBUG_SD_ERROR && storage.file == NULL);
+    storage.file = fopen("/dev/full", "wb");
+    assert(storage.file);
+    assert(fputs("buffered", storage.file) >= 0);
+    bt_debug_storage_close(&storage);
+    assert(storage.state == BT_DEBUG_SD_ERROR && storage.file == NULL);
+    storage.file = fopen("/dev/full", "wb");
+    assert(storage.file);
+    assert(fputs("buffered", storage.file) >= 0);
+    storage.state = BT_DEBUG_SD_RECORDING;
+    storage.file_bytes = storage.file_limit;
+    assert(!bt_debug_storage_write(&storage, "rotate", 6));
+    assert(storage.state == BT_DEBUG_SD_ERROR && storage.file == NULL);
     puts("debug storage: no-card, append, rotation, limit, no-overwrite and IO failure PASS");
 }
