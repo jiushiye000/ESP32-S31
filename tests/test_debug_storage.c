@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include "bt_debug_storage.h"
 
 int main(int argc, char **argv)
@@ -56,5 +57,14 @@ int main(int argc, char **argv)
     storage.state = BT_DEBUG_SD_RECORDING;
     assert(!bt_debug_storage_write(&storage, "fail", 4));
     assert(storage.state == BT_DEBUG_SD_ERROR && storage.last_errno != 0 && storage.file == NULL);
-    puts("debug storage: no-card, append, rotation, limit, no-overwrite and write failure PASS");
+    /* A successful stdio flush alone must not hide a failed filesystem sync. */
+    int pipe_fds[2];
+    assert(pipe(pipe_fds) == 0);
+    storage.file = fdopen(pipe_fds[1], "wb");
+    assert(storage.file);
+    storage.state = BT_DEBUG_SD_RECORDING;
+    assert(!bt_debug_storage_flush(&storage));
+    assert(storage.state == BT_DEBUG_SD_ERROR && storage.file == NULL);
+    close(pipe_fds[0]);
+    puts("debug storage: no-card, append, rotation, limit, no-overwrite and IO failure PASS");
 }
