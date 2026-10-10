@@ -4,13 +4,13 @@
 A2DP/SBC 发送音乐，ESP-GMF 解码后将 PCM 送入板载 ES8389，AVRCP
 Controller/Target 提供播放、暂停、切歌和音量控制。
 
-工程从本机 `/home/yiyuan/share/esp32s31` 的 Demo 迁入。本仓库保存应用、
+工程从esp32的 Demo 迁入。本仓库保存应用、
 配置和脚本；ESP-IDF 与工具链继续使用本机独立安装。
 
 ## 固定基线
 
 - 开发板配置：ESP32-S31-Korvo-1 V1.1，ES8389。
-- ESP-IDF：本机 `v6.1`，位于 `/home/yiyuan/.espressif/v6.1/esp-idf`。
+- ESP-IDF：`v6.1`。
 - ESP-GMF：`v1.0`，提交 `efc94f51c22d3af68a6f2f654f0eec9d13a46cb3`。
 - 蓝牙角色：A2DP Sink、AVRCP Controller、AVRCP Target。
 - 当前关闭：HFP、LE Audio、PBAP、LVGL UI。
@@ -43,12 +43,12 @@ git submodule update --init --recursive
 在本机目标目录执行：
 
 ```bash
-cd /home/yiyuan/share/esp32
+cd path/to/repo
 ./tests/validate_demo.sh
 ./scripts/build_demo.sh
 ```
 
-构建脚本自动激活 `/home/yiyuan/.espressif/tools/activate_idf_v6.1.sh`，
+构建脚本自动激活 `.espressif/tools/activate_idf_v6.1.sh`，
 选择 `esp32s31` 和 `esp32_s31_korvo_1`，应用 `sdkconfig.defaults.korvo1`。
 本机 IDF v6.1 将 S31 标为 preview 芯片，脚本已包含所需的 `--preview` 参数。
 
