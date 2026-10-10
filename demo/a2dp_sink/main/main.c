@@ -511,7 +511,7 @@ static void bt_audio_event_cb(esp_bt_audio_event_t event, void *event_data, void
                      conn_st->addr[3], conn_st->addr[4], conn_st->addr[5]);
             if (conn_st->connected) {
 #if CONFIG_EXAMPLE_BT_UI_ENABLE
-                bt_ui_set_connected(ui, true);
+                bt_ui_set_connected(ui, true, conn_st->addr);
 #endif  /* CONFIG_EXAMPLE_BT_UI_ENABLE */
 #if CONFIG_BT_CLASSIC_ENABLED && (defined(CONFIG_GMF_EXAMPLE_A2DP_SOURCE) || defined(CONFIG_GMF_EXAMPLE_A2DP_SINK))
                 esp_bt_audio_classic_set_scan_mode(false, false);
@@ -526,7 +526,7 @@ static void bt_audio_event_cb(esp_bt_audio_event_t event, void *event_data, void
                 esp_bt_audio_classic_set_scan_mode(true, true);
 #endif  /* CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_A2DP_SOURCE) */
 #if CONFIG_EXAMPLE_BT_UI_ENABLE
-                bt_ui_set_connected(ui, false);
+                bt_ui_set_connected(ui, false, conn_st->addr);
 #endif  /* CONFIG_EXAMPLE_BT_UI_ENABLE */
             }
             cli_bt_device_conn_st_chg(conn_st->addr, conn_st->connected);
@@ -738,6 +738,10 @@ void app_main()
     };
     ESP_ERROR_CHECK(bt_ui_init());
     ui = bt_ui_create(BT_UI_DEVICE_NAME, &ui_cfg);
+    if (ui == NULL) {
+        ESP_LOGE(TAG, "Failed to create Bluetooth UI");
+        ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
+    }
 #endif  /* CONFIG_EXAMPLE_BT_UI_ENABLE */
 
 #if CONFIG_BT_ENABLED

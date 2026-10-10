@@ -850,6 +850,12 @@ static int log_level(int argc, char **argv)
         return 1;
     }
 
+    if (level > CONFIG_LOG_MAXIMUM_LEVEL) {
+        printf("Requested level %d exceeds compiled maximum %d. Rebuild with a higher maximum (screen profile supports DEBUG).\n",
+               (int)level, CONFIG_LOG_MAXIMUM_LEVEL);
+        return 1;
+    }
+
     esp_log_level_set(argv[1], level);
     printf("Set log level: tag=%s level=%s\n", argv[1], argv[2]);
     return 0;

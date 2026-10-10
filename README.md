@@ -1,6 +1,7 @@
 # ESP32-S31 蓝牙音频测试盒
 
-当前工程将 ESP32-S31-Korvo-1 V1.1 配置为无屏经典蓝牙音箱：手机通过
+默认构建保持已跑通的无屏基线；可选屏幕版复用官方 LVGL 播放器并增加 Debug 页。
+两种构建均将 ESP32-S31-Korvo-1 V1.1 配置为经典蓝牙音箱：手机通过
 A2DP/SBC 发送音乐，ESP-GMF 解码后将 PCM 送入板载 ES8389，AVRCP
 Controller/Target 提供播放、暂停、切歌和音量控制。
 
@@ -13,7 +14,7 @@ Controller/Target 提供播放、暂停、切歌和音量控制。
 - ESP-IDF：本机 `v6.1`，位于 `/home/yiyuan/.espressif/v6.1/esp-idf`。
 - ESP-GMF：`v1.0`，提交 `efc94f51c22d3af68a6f2f654f0eec9d13a46cb3`。
 - 蓝牙角色：A2DP Sink、AVRCP Controller、AVRCP Target。
-- 当前关闭：HFP、LE Audio、PBAP、LVGL UI。
+- 当前关闭：HFP、LE Audio、PBAP。LVGL UI 由 `DEMO_UI=1` 单独启用。
 
 应用基于乐鑫 Apache-2.0 许可的 `bt_audio` 示例，保留原始文件中的许可声明。
 `third_party/esp-gmf` 是固定提交的 Git 子模块；组件通过相对 `override_path`
@@ -107,3 +108,26 @@ disconnect
 后续再增加首包、首帧 PCM、Codec 写入时间戳和串口自动化测试。
 
 本次迁移的编译结果、版本和固件校验见 [编译验证记录](docs/BUILD_VERIFICATION.md)。
+
+## 屏幕版与调试日志
+
+屏幕版沿用现有 `bt_ui`、Board Manager 和 `esp_lvgl_port`，没有新增驱动或依赖。
+适用当前 Korvo-1 的 800×480 RGB LCD 和 GT1151 触摸配置：
+
+```bash
+DEMO_UI=1 ./scripts/build_demo.sh
+# 手动确认串口、接线与供电后再烧录：
+DEMO_UI=1 ./scripts/flash_demo.sh /dev/ttyUSB0
+```
+
+独立输出到 `demo/a2dp_sink/build-ui/`，配置为 `sdkconfig.ui`，不覆盖默认
+`build/` 和 `sdkconfig`。屏幕版蓝牙名称为 `GMF_BT_UI_XXXX`，需要按新名称搜索。
+启动后显示 Debug 页；Media 页提供官方播放/暂停、切歌和歌曲信息界面。
+HFP 关闭时不显示拨号页，当前不启用封面传输。
+
+屏幕版编译保留 DEBUG、默认输出 INFO。屏幕按钮可按应用标签切换 DEBUG，
+串口仍可使用 `log_level <tag> <level>`。Debug 页显示关键状态事件，不是全部
+串口日志的镜像，流状态也不是物理出声证明。
+
+实现位置、官方文档、LVGL 学习路线和上板回归项目见
+[屏幕与调试指南](docs/UI_GUIDE.md)。

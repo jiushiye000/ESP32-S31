@@ -72,8 +72,9 @@ esp_err_t bt_ui_init(void);
 /**
  * @brief  Create the full BT UI widget tree on the active screen.
  *
- *         Builds splash screen, main container with tabview (dialer + media),
- *         and volume bar.  Starts the internal cover-art task.
+ *         Reuses the official media controls, adds a Debug tab and a volume bar.
+ *         The phone tab is present only when the corresponding role is enabled.
+ *         Starts the internal cover-art task; diagnostics use the LVGL timer.
  *
  * @param[in]  device_name  Null-terminated device name shown on splash screen.
  * @param[in]  config       Callback table.  May be NULL if no callbacks needed.
@@ -85,12 +86,15 @@ esp_err_t bt_ui_init(void);
 bt_ui_t *bt_ui_create(const char *device_name, const bt_ui_config_t *config);
 
 /**
- * @brief  Show or hide the splash / main screen depending on connection state.
+ * @brief  Queue a connection snapshot for the Debug tab (non-blocking).
  *
  * @param[in]  ui         UI handle from bt_ui_create().
- * @param[in]  connected  true = show main UI; false = show splash.
+ * @param[in]  connected  Connection state reported by the Bluetooth callback.
+ * @param[in]  addr       Six-byte peer address, copied before returning.
+ *
+ *         Keep both tabs accessible while disconnected for fault diagnosis.
  */
-void bt_ui_set_connected(bt_ui_t *ui, bool connected);
+void bt_ui_set_connected(bt_ui_t *ui, bool connected, const uint8_t addr[6]);
 
 /**
  * @brief  Update the on-screen volume bar and the tracked volume level.

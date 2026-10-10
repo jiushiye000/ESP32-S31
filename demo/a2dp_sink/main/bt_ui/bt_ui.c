@@ -18,6 +18,7 @@
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_lvgl_port.h"
 #include "esp_board_manager.h"
 #include "esp_board_manager_defs.h"
@@ -29,11 +30,15 @@
 #include "esp_bt_audio_defs.h"
 #include "esp_bt_audio_playback.h"
 #include "esp_bt_audio_tel.h"
+#include "codec_defs.h"
 
 #define UI_COVER_QUEUE_SIZE       2
 #define UI_COVER_TASK_STACK_SIZE  4096
 #define UI_COVER_TASK_PRIO        5
 #define LVGL_DRAW_BUF_LINES       (BT_UI_HEIGHT / 2)
+#define UI_DEBUG_QUEUE_SIZE       16
+#define UI_DEBUG_VISIBLE_EVENTS   8
+#define UI_TAB_BAR_HEIGHT         44
 
 #define BT_UI_FONT_LARGE       (&lv_font_notosanssc_regular_28)
 #define BT_UI_FONT_MEDIUM      (&lv_font_notosanssc_regular_28)
@@ -58,7 +63,7 @@
 #define DIALER_START_Y    82
 #define DIALER_ROW_GAP    28
 
-#define CONTENT_H          BT_UI_HEIGHT
+#define CONTENT_H          (BT_UI_HEIGHT - UI_TAB_BAR_HEIGHT)
 #define VOL_BAR_W          6
 #define VOL_BAR_H          (BT_UI_HEIGHT / 5)
 #define VOL_BAR_RIGHT_GAP  12
@@ -97,6 +102,34 @@ typedef struct {
     size_t    size;  /*!< Encoded image buffer size in bytes */
 } ui_cover_msg_t;
 
+typedef enum {
+    UI_DEBUG_CONNECTION,
+    UI_DEBUG_STREAM,
+    UI_DEBUG_PLAYBACK,
+    UI_DEBUG_VOLUME,
+} ui_debug_event_type_t;
+
+/* Value-only snapshots: never queue borrowed Bluetooth pointers. */
+typedef struct {
+    ui_debug_event_type_t             type;
+    int64_t                          t_us;
+    uint8_t                          addr[6];
+    bool                             connected;
+    uint32_t                         value;
+    bool                             format_valid;
+    esp_bt_audio_stream_codec_info_t  format;
+} ui_debug_event_t;
+
+typedef struct {
+    bool                             connected;
+    uint8_t                          addr[6];
+    uint32_t                         stream_state;
+    uint32_t                         playback_state;
+    int                              volume;
+    esp_bt_audio_stream_codec_info_t  format;
+    bool                             format_valid;
+} ui_debug_snapshot_t;
+
 /**
  * @brief  Runtime state for the Bluetooth demo UI.
  */
@@ -112,6 +145,15 @@ struct bt_ui_t {
     esp_bt_audio_stream_handle_t  stream_type_stream;        /*!< Stream used to derive media placeholder state */
     bool                          stream_type_is_broadcast;  /*!< True when stream_type_stream is a BIS stream */
     QueueHandle_t                 cover_queue;               /*!< Queue carrying cover image updates */
+    QueueHandle_t                 debug_queue;
+    lv_obj_t                     *debug_status;
+    lv_obj_t                     *debug_events;
+    lv_obj_t                     *debug_level_label;
+    uint32_t                      debug_dropped;
+    uint32_t                      media_tab_index;
+    bool                          connected;
+    portMUX_TYPE                  debug_mux;
+    ui_debug_snapshot_t           debug_snapshot;
 };
 
 /**
@@ -252,6 +294,199 @@ static void bt_ui_cover_task(void *arg)
     }
 }
 
+static const char *debug_stream_state(uint32_t state)
+{
+    switch (state) {
+        case ESP_BT_AUDIO_STREAM_STATE_ALLOCATED: return "ALLOCATED";
+        case ESP_BT_AUDIO_STREAM_STATE_STARTED: return "STARTED";
+        case ESP_BT_AUDIO_STREAM_STATE_STOPPED: return "STOPPED";
+        case ESP_BT_AUDIO_STREAM_STATE_RELEASED: return "RELEASED";
+        default: return "UNKNOWN";
+    }
+}
+
+static const char *debug_playback_state(uint32_t state)
+{
+    switch (state) {
+        case ESP_BT_AUDIO_PLAYBACK_STATUS_STOPPED: return "STOPPED";
+        case ESP_BT_AUDIO_PLAYBACK_STATUS_PLAYING: return "PLAYING";
+        case ESP_BT_AUDIO_PLAYBACK_STATUS_PAUSED: return "PAUSED";
+        case ESP_BT_AUDIO_PLAYBACK_STATUS_FWD_SEEK: return "FWD_SEEK";
+        case ESP_BT_AUDIO_PLAYBACK_STATUS_REV_SEEK: return "REV_SEEK";
+        case ESP_BT_AUDIO_PLAYBACK_STATUS_ERROR: return "ERROR";
+        default: return "UNKNOWN";
+    }
+}
+
+static void debug_post(bt_ui_t *ui, ui_debug_event_t *event)
+{
+    if (ui == NULL || ui->debug_queue == NULL) {
+        return;
+    }
+    event->t_us = esp_timer_get_time();
+    /* Current state must remain correct even if the history queue overflows. */
+    portENTER_CRITICAL(&ui->debug_mux);
+    ui_debug_snapshot_t *snapshot = &ui->debug_snapshot;
+    switch (event->type) {
+        case UI_DEBUG_CONNECTION:
+            snapshot->connected = event->connected;
+            memcpy(snapshot->addr, event->addr, sizeof(snapshot->addr));
+            if (!event->connected) {
+                snapshot->format_valid = false;
+                snapshot->stream_state = UINT32_MAX;
+                snapshot->playback_state = UINT32_MAX;
+            }
+            break;
+        case UI_DEBUG_STREAM:
+            snapshot->stream_state = event->value;
+            if (event->format_valid) {
+                snapshot->format = event->format;
+                snapshot->format_valid = true;
+            } else if (event->value == ESP_BT_AUDIO_STREAM_STATE_RELEASED) {
+                snapshot->format_valid = false;
+            }
+            break;
+        case UI_DEBUG_PLAYBACK:
+            snapshot->playback_state = event->value;
+            break;
+        case UI_DEBUG_VOLUME:
+            snapshot->volume = (int)event->value;
+            break;
+    }
+    portEXIT_CRITICAL(&ui->debug_mux);
+    if (xQueueSend(ui->debug_queue, event, 0) != pdTRUE) {
+        __atomic_fetch_add(&ui->debug_dropped, 1, __ATOMIC_RELAXED);
+    }
+}
+
+static void debug_add_line(bt_ui_t *ui, const char *line)
+{
+    lv_obj_t *item = lv_list_add_text(ui->debug_events, line);
+    lv_obj_set_style_bg_color(item, lv_color_hex(0x162f47), 0);
+    lv_obj_set_style_text_color(item, lv_color_hex(0xe8eef4), 0);
+    while (lv_obj_get_child_count(ui->debug_events) > UI_DEBUG_VISIBLE_EVENTS) {
+        lv_obj_delete(lv_obj_get_child(ui->debug_events, 0));
+    }
+    lv_obj_scroll_to_view(item, LV_ANIM_OFF);
+}
+
+/* A2DP Sink's per-packet DEBUG is intentionally left to explicit serial control. */
+static const char *const debug_tags[] = {
+    "BT_AUD_EXAMPLE", "BT_AUD_CLASSIC", "BT_AUD_AVRC_CT", "BT_AUD_AVRC_TG",
+    "STREAM_PROC", "ESP_GMF_IO_BT", "BT_UI"
+};
+
+static bool debug_tags_enabled(void)
+{
+    for (size_t i = 0; i < sizeof(debug_tags) / sizeof(debug_tags[0]); ++i) {
+        if (esp_log_level_get(debug_tags[i]) < ESP_LOG_DEBUG) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void debug_toggle_cb(lv_event_t *event)
+{
+    bt_ui_t *ui = lv_event_get_user_data(event);
+    esp_log_level_t level = debug_tags_enabled() ? ESP_LOG_INFO : ESP_LOG_DEBUG;
+    if (level > CONFIG_LOG_MAXIMUM_LEVEL) {
+        debug_add_line(ui, "DEBUG unavailable: rebuild with the screen profile");
+        return;
+    }
+    for (size_t i = 0; i < sizeof(debug_tags) / sizeof(debug_tags[0]); ++i) {
+        esp_log_level_set(debug_tags[i], level);
+    }
+    debug_add_line(ui, level == ESP_LOG_DEBUG ? "App tag DEBUG enabled (serial)" : "App tag INFO restored (serial)");
+}
+
+/* Diagnostics run on the existing LVGL task; no drawing in debug_post(). */
+static void debug_refresh(lv_timer_t *timer)
+{
+    bt_ui_t *ui = lv_timer_get_user_data(timer);
+    ui_debug_event_t event;
+    for (unsigned i = 0; i < UI_DEBUG_QUEUE_SIZE && xQueueReceive(ui->debug_queue, &event, 0) == pdTRUE; ++i) {
+        char detail[96];
+        switch (event.type) {
+            case UI_DEBUG_CONNECTION:
+                snprintf(detail, sizeof(detail), "%s %02X:%02X:%02X:%02X:%02X:%02X",
+                         event.connected ? "CONNECTED" : "DISCONNECTED",
+                         event.addr[0], event.addr[1], event.addr[2], event.addr[3], event.addr[4], event.addr[5]);
+                break;
+            case UI_DEBUG_STREAM:
+                snprintf(detail, sizeof(detail), "STREAM_%s", debug_stream_state(event.value));
+                break;
+            case UI_DEBUG_PLAYBACK:
+                snprintf(detail, sizeof(detail), "AVRCP_%s", debug_playback_state(event.value));
+                break;
+            case UI_DEBUG_VOLUME:
+                snprintf(detail, sizeof(detail), "VOLUME_%" PRIu32, event.value);
+                break;
+            default:
+                continue;
+        }
+        char line[128];
+        snprintf(line, sizeof(line), "%" PRId64 " us  %s", event.t_us, detail);
+        debug_add_line(ui, line);
+        ESP_LOGD(TAG, "UI_EVENT t_us=%" PRId64 " %s", event.t_us, detail);
+    }
+    ui_debug_snapshot_t snapshot;
+    portENTER_CRITICAL(&ui->debug_mux);
+    snapshot = ui->debug_snapshot;
+    portEXIT_CRITICAL(&ui->debug_mux);
+    if (ui->connected && !snapshot.connected) {
+        bt_ui_media_set_playing(ui->media, false);
+        bt_ui_media_set_track(ui->media, "", "");
+    }
+    ui->connected = snapshot.connected;
+    char peer[18];
+    snprintf(peer, sizeof(peer), "%02X:%02X:%02X:%02X:%02X:%02X",
+             snapshot.addr[0], snapshot.addr[1], snapshot.addr[2], snapshot.addr[3], snapshot.addr[4], snapshot.addr[5]);
+    const esp_bt_audio_stream_codec_info_t *format = &snapshot.format;
+    lv_label_set_text_fmt(ui->debug_status,
+                         "Link: %s   Peer: %s\nStream: %s   Codec: %s\n"
+                         "Input: %" PRIu32 " Hz / %" PRIu32 " ch / %" PRIu32 " bit   Output: %d Hz\n"
+                         "AVRCP: %s   Volume: %d   UI queue drops: %" PRIu32,
+                         snapshot.connected ? "CONNECTED" : "DISCONNECTED", peer,
+                         debug_stream_state(snapshot.stream_state), !snapshot.format_valid ? "UNKNOWN" :
+                         (format->codec_type == ESP_BT_AUDIO_STREAM_CODEC_SBC ? "SBC" : "OTHER"),
+                         snapshot.format_valid ? format->sample_rate : 0,
+                         snapshot.format_valid ? (uint32_t)__builtin_popcount(format->channels) : 0,
+                         snapshot.format_valid ? format->bits : 0, CODEC_DAC_SAMPLE_RATE,
+                         debug_playback_state(snapshot.playback_state), snapshot.volume,
+                         __atomic_load_n(&ui->debug_dropped, __ATOMIC_RELAXED));
+    lv_label_set_text(ui->debug_level_label, debug_tags_enabled() ? "App DEBUG: ON" : "Enable app DEBUG");
+}
+
+static void debug_create(bt_ui_t *ui, lv_obj_t *parent, const char *device_name)
+{
+    lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(parent, lv_color_hex(0x102840), 0);
+    lv_obj_set_style_text_color(parent, lv_color_hex(0xe8eef4), 0);
+    lv_obj_set_style_text_font(parent, BT_UI_FONT_SMALL, 0);
+    lv_obj_t *name = lv_label_create(parent);
+    lv_label_set_text_fmt(name, "Audio bench: %s", device_name);
+    lv_obj_set_pos(name, 16, 12);
+    lv_obj_t *button = lv_button_create(parent);
+    lv_obj_set_size(button, 220, 44);
+    lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -16, 4);
+    lv_obj_add_event_cb(button, debug_toggle_cb, LV_EVENT_CLICKED, ui);
+    ui->debug_level_label = lv_label_create(button);
+    lv_obj_center(ui->debug_level_label);
+    ui->debug_status = lv_label_create(parent);
+    lv_obj_set_pos(ui->debug_status, 16, 66);
+    lv_obj_set_width(ui->debug_status, BT_UI_WIDTH - 32);
+    ui->debug_events = lv_list_create(parent);
+    lv_obj_set_pos(ui->debug_events, 16, 174);
+    lv_obj_set_size(ui->debug_events, BT_UI_WIDTH - 32, CONTENT_H - 190);
+    lv_obj_set_style_text_font(ui->debug_events, BT_UI_FONT_SMALL, 0);
+    lv_obj_set_style_bg_color(ui->debug_events, lv_color_hex(0x162f47), 0);
+    debug_add_line(ui, "Recent state events; timestamps are uptime, not acoustic latency");
+    lv_timer_t *timer = lv_timer_create(debug_refresh, 200, ui);
+    ESP_ERROR_CHECK(timer != NULL ? ESP_OK : ESP_ERR_NO_MEM);
+    debug_refresh(timer);
+}
+
 esp_err_t bt_ui_init(void)
 {
     dev_display_lcd_handles_t *lcd_handles = NULL;
@@ -338,11 +573,22 @@ bt_ui_t *bt_ui_create(const char *device_name, const bt_ui_config_t *config)
         return NULL;
     }
     ui->volume = 50;
+    ui->debug_mux = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
+    ui->debug_snapshot.volume = 50;
+    ui->debug_snapshot.stream_state = UINT32_MAX;
+    ui->debug_snapshot.playback_state = UINT32_MAX;
+    ui->debug_queue = xQueueCreate(UI_DEBUG_QUEUE_SIZE, sizeof(ui_debug_event_t));
+    if (ui->debug_queue == NULL) {
+        free(ui);
+        ESP_LOGE(TAG, "Create UI debug queue failed");
+        return NULL;
+    }
 
     /* Cover-art queue */
     ui->cover_queue = xQueueCreate(UI_COVER_QUEUE_SIZE, sizeof(ui_cover_msg_t));
     if (ui->cover_queue == NULL) {
         ESP_LOGW(TAG, "Create UI cover queue failed");
+        vQueueDelete(ui->debug_queue);
         free(ui);
         return NULL;
     }
@@ -350,6 +596,7 @@ bt_ui_t *bt_ui_create(const char *device_name, const bt_ui_config_t *config)
                                       ui, UI_COVER_TASK_PRIO, NULL);
     if (task_ret != pdPASS) {
         vQueueDelete(ui->cover_queue);
+        vQueueDelete(ui->debug_queue);
         free(ui);
         ESP_LOGW(TAG, "Create UI cover task failed");
         return NULL;
@@ -358,6 +605,7 @@ bt_ui_t *bt_ui_create(const char *device_name, const bt_ui_config_t *config)
     lvgl_port_lock(0);
     lv_obj_t *scr = lv_scr_act();
     ui->splash = bt_ui_splash_create(scr, device_name);
+    lv_obj_add_flag(ui->splash, LV_OBJ_FLAG_HIDDEN);
 
     ui->main = lv_obj_create(scr);
     lv_obj_remove_style_all(ui->main);
@@ -365,48 +613,50 @@ bt_ui_t *bt_ui_create(const char *device_name, const bt_ui_config_t *config)
     lv_obj_align(ui->main, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_clear_flag(ui->main, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_opa(ui->main, LV_OPA_TRANSP, 0);
-    lv_obj_add_flag(ui->main, LV_OBJ_FLAG_HIDDEN);
 
     ui->tabview = lv_tabview_create(ui->main);
-    lv_tabview_set_tab_bar_size(ui->tabview, 0);
+    lv_tabview_set_tab_bar_size(ui->tabview, UI_TAB_BAR_HEIGHT);
+    lv_obj_set_style_text_font(lv_tabview_get_tab_bar(ui->tabview), BT_UI_FONT_SMALL, 0);
     lv_obj_set_pos(ui->tabview, 0, 0);
     lv_obj_set_size(ui->tabview, BT_UI_WIDTH, BT_UI_HEIGHT);
 
-    lv_obj_t *tab_dialer = lv_tabview_add_tab(ui->tabview, "");
-    lv_obj_t *tab_music = lv_tabview_add_tab(ui->tabview, "");
+    ui->media_tab_index = 0;
+#if CONFIG_GMF_EXAMPLE_HFP_HF || CONFIG_GMF_EXAMPLE_LE_TMAP_ROLE_CT
+    lv_obj_t *tab_dialer = lv_tabview_add_tab(ui->tabview, "Phone");
     lv_obj_clear_flag(tab_dialer, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(tab_music, LV_OBJ_FLAG_SCROLLABLE);
-
+    lv_obj_set_style_pad_all(tab_dialer, 0, 0);
+    ui->media_tab_index = 1;
     ui->dialer = bt_ui_dialer_create(tab_dialer,
                                      config ? config->dial_cb : NULL, config ? config->dial_ctx : NULL,
                                      config ? config->end_call_cb : NULL, config ? config->end_call_ctx : NULL,
                                      config ? config->answer_call_cb : NULL, config ? config->answer_call_ctx : NULL);
+#endif
+    lv_obj_t *tab_music = lv_tabview_add_tab(ui->tabview, "Media");
+    lv_obj_clear_flag(tab_music, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(tab_music, 0, 0);
     ui->media = bt_ui_media_create(tab_music,
                                    config ? config->play_pause_cb : NULL, config ? config->play_pause_ctx : NULL,
                                    config ? config->prev_cb : NULL, config ? config->next_cb : NULL,
                                    config ? config->prev_next_ctx : NULL);
+    lv_obj_t *tab_debug = lv_tabview_add_tab(ui->tabview, "Debug");
+    lv_obj_set_style_pad_all(tab_debug, 0, 0);
+    debug_create(ui, tab_debug, device_name);
     ui->volume_bar = bt_ui_volume_bar_create(ui->main);
     bt_ui_volume_bar_set_level(ui->volume_bar, ui->volume);
-    lv_tabview_set_act(ui->tabview, 1, LV_ANIM_OFF);
+    lv_tabview_set_act(ui->tabview, ui->media_tab_index + 1, LV_ANIM_OFF);
     lvgl_port_unlock();
 
     return ui;
 }
 
-void bt_ui_set_connected(bt_ui_t *ui, bool connected)
+void bt_ui_set_connected(bt_ui_t *ui, bool connected, const uint8_t addr[6])
 {
-    if (ui == NULL || ui->splash == NULL || ui->main == NULL) {
+    if (ui == NULL || addr == NULL) {
         return;
     }
-    lvgl_port_lock(0);
-    if (connected) {
-        lv_obj_add_flag(ui->splash, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(ui->main, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_clear_flag(ui->splash, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(ui->main, LV_OBJ_FLAG_HIDDEN);
-    }
-    lvgl_port_unlock();
+    ui_debug_event_t event = {.type = UI_DEBUG_CONNECTION, .connected = connected};
+    memcpy(event.addr, addr, sizeof(event.addr));
+    debug_post(ui, &event);
 }
 
 void bt_ui_update_volume(bt_ui_t *ui, int volume)
@@ -415,6 +665,8 @@ void bt_ui_update_volume(bt_ui_t *ui, int volume)
         return;
     }
     ui->volume = volume < 0 ? 0 : (volume > 100 ? 100 : volume);
+    ui_debug_event_t event = {.type = UI_DEBUG_VOLUME, .value = (uint32_t)ui->volume};
+    debug_post(ui, &event);
     if (ui->volume_bar == NULL) {
         return;
     }
@@ -433,6 +685,8 @@ void bt_ui_update_playback_status(bt_ui_t *ui, uint32_t play_status)
     if (ui == NULL || ui->media == NULL) {
         return;
     }
+    ui_debug_event_t event = {.type = UI_DEBUG_PLAYBACK, .value = play_status};
+    debug_post(ui, &event);
     lvgl_port_lock(0);
     bt_ui_media_set_playing(ui->media, play_status == ESP_BT_AUDIO_PLAYBACK_STATUS_PLAYING);
     lvgl_port_unlock();
@@ -466,6 +720,12 @@ void bt_ui_update_stream_type(bt_ui_t *ui, esp_bt_audio_stream_handle_t stream,
     if (ui == NULL || ui->media == NULL || stream == NULL) {
         return;
     }
+    ui_debug_event_t event = {.type = UI_DEBUG_STREAM, .value = (uint32_t)state};
+    if (state == ESP_BT_AUDIO_STREAM_STATE_ALLOCATED || state == ESP_BT_AUDIO_STREAM_STATE_STARTED) {
+        event.format_valid = esp_bt_audio_stream_get_codec_info(stream, &event.format) == ESP_OK;
+        event.format.codec_cfg = NULL;
+    }
+    debug_post(ui, &event);
     if (state == ESP_BT_AUDIO_STREAM_STATE_STARTED) {
         esp_bt_audio_stream_profile_t profile = ESP_BT_AUDIO_STREAM_PROFILE_UNKNOWN;
         if (esp_bt_audio_stream_get_profile(stream, &profile) != ESP_OK) {
@@ -506,7 +766,7 @@ void bt_ui_update_call_state(bt_ui_t *ui, int state, const char *number)
     bt_ui_dialer_set_call_state(ui->dialer, state, number);
     /* Switch to the dialer tab on any call activity; return to media when idle */
     if (ui->tabview != NULL) {
-        lv_tabview_set_act(ui->tabview, state != 0 ? 0 : 1, LV_ANIM_ON);
+        lv_tabview_set_act(ui->tabview, state != 0 ? 0 : ui->media_tab_index, LV_ANIM_ON);
     }
     lvgl_port_unlock();
 }

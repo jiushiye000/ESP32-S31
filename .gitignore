@@ -3,3 +3,7 @@ demo/a2dp_sink/managed_components/
 demo/a2dp_sink/components/gen_bmgr_codes/
 demo/a2dp_sink/sdkconfig
 demo/a2dp_sink/sdkconfig.old
+demo/a2dp_sink/build-ui/
+demo/a2dp_sink/sdkconfig.ui
+demo/a2dp_sink/sdkconfig.ui.old
+demo/a2dp_sink/sdkconfig*.before-board.*
