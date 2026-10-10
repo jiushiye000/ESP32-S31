@@ -13,6 +13,7 @@ required_files=(
     "${demo_dir}/CMakeLists.txt"
     "${demo_dir}/main/CMakeLists.txt"
     "${demo_dir}/main/main.c"
+    "${demo_dir}/sdkconfig.defaults.korvo1.ui"
     "${config_file}"
 )
 
@@ -48,5 +49,15 @@ if ! grep -Fq 'esp32_s31_korvo_1' "${root_dir}/scripts/build_demo.sh"; then
     printf 'build script does not select esp32_s31_korvo_1\n' >&2
     exit 1
 fi
+
+for expected in 'CONFIG_EXAMPLE_BT_UI_ENABLE=y' 'CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y'; do
+    if ! grep -Fqx "${expected}" "${demo_dir}/sdkconfig.defaults.korvo1.ui"; then
+        printf 'missing UI profile config: %s\n' "${expected}" >&2
+        exit 1
+    fi
+done
+
+cmake -DTEST_UI=OFF -P "${root_dir}/tests/check_ui_sources.cmake"
+cmake -DTEST_UI=ON -P "${root_dir}/tests/check_ui_sources.cmake"
 
 printf 'demo structure and configuration checks passed\n'
