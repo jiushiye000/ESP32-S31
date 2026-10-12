@@ -10,7 +10,7 @@ static bool requested;
 static unsigned requests;
 static esp_err_t result;
 static esp_err_t accepted(bool play, void *ctx) { (void)ctx; requested = play; ++requests; return result; }
-/* SOF0 header only; the fake decoder isolates widget/ownership/lock behavior. */
+/* Header/SOS envelope only; the fake decoder isolates widget/ownership/locking. */
 static const uint8_t fixture[] = {0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 32, 0, 32, 1, 1, 0x11, 0,
     0xff, 0xda, 0, 8, 1, 1, 0, 0, 0x3f, 0, 0, 0xff, 0xd9};
 static lv_obj_t *find_cover(lv_obj_t *root)

@@ -53,6 +53,7 @@
 #include "stream_proc.h"
 #include "codec_defs.h"
 #include "bt_debug.h"
+#include "bt_metadata_text.h"
 
 #ifdef CONFIG_GMF_EXAMPLE_A2DP_SOURCE
 #define A2DP_SRC_SEND_TASK_CORE_ID     1
@@ -267,13 +268,14 @@ static void on_answer_call_cb(void *ctx)
     }
 }
 
-static void on_play_pause_cb(bool want_play, void *ctx)
+static esp_err_t on_play_pause_cb(bool want_play, void *ctx)
 {
     (void)ctx;
     esp_err_t ret = want_play ? esp_bt_audio_playback_play() : esp_bt_audio_playback_pause();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Playback %s failed: %s", want_play ? "play" : "pause", esp_err_to_name(ret));
     }
+    return ret;
 }
 
 static void on_prev_cb(void *ctx)
@@ -427,6 +429,10 @@ static void playback_status_chg_proc(esp_bt_audio_event_playback_st_t *event_dat
             break;
         case ESP_BT_AUDIO_PLAYBACK_EVENT_TRACK_CHANGE:
             ESP_LOGI(TAG, "Track changed, requesting metadata");
+#if CONFIG_EXAMPLE_BT_UI_ENABLE
+            bt_ui_update_track(ui, "", "");
+            bt_ui_post_cover(ui, NULL, 0);
+#endif
             esp_bt_audio_playback_request_metadata(ESP_BT_AUDIO_PLAYBACK_METADATA_TITLE |
                                                    ESP_BT_AUDIO_PLAYBACK_METADATA_ARTIST |
                                                    ESP_BT_AUDIO_PLAYBACK_METADATA_ALBUM |
@@ -444,37 +450,28 @@ static void playback_status_chg_proc(esp_bt_audio_event_playback_st_t *event_dat
 
 static void playback_metadata_proc(esp_bt_audio_event_playback_metadata_t *event_data)
 {
-#if CONFIG_EXAMPLE_BT_UI_ENABLE
-    static char title[96];
-    static char artist[96];
-#endif  /* CONFIG_EXAMPLE_BT_UI_ENABLE */
+    if (event_data == NULL) return;
     if (event_data->type == ESP_BT_AUDIO_PLAYBACK_METADATA_COVER_ART) {
+        if (event_data->length < sizeof(esp_bt_audio_playback_cover_art_t)) return;
         esp_bt_audio_playback_cover_art_t *cover_art = (esp_bt_audio_playback_cover_art_t *)event_data->value;
         if (cover_art != NULL && cover_art->data != NULL && cover_art->size > 0) {
             ESP_LOGI(TAG, "Cover art: size %d, format 0x%04X", cover_art->size, cover_art->format_fourcc);
 #if CONFIG_EXAMPLE_BT_UI_ENABLE
-            bt_ui_post_cover(ui, cover_art->data, cover_art->size);
+            if (cover_art->format_fourcc == ESP_BT_AUDIO_FOURCC_JPEG) {
+                bt_ui_post_cover(ui, cover_art->data, cover_art->size);
+            }
 #endif  /* CONFIG_EXAMPLE_BT_UI_ENABLE */
         }
     } else {
-        ESP_LOGI(TAG, "Metadata: %s:\t%s",
-                 playback_metadata_type_to_str(event_data->type), event_data->length > 0 ? (const char *)event_data->value : "");
+        char text[256];
+        bt_metadata_text_copy(text, sizeof(text), event_data->value, event_data->length);
+        ESP_LOGI(TAG, "Metadata: %s:\t%s", playback_metadata_type_to_str(event_data->type), text);
 #if CONFIG_EXAMPLE_BT_UI_ENABLE
-        if (event_data->value != NULL && event_data->length > 0) {
-            char *target = NULL;
-            size_t target_size = 0;
+        if (event_data->value != NULL || event_data->length == 0) {
             if (event_data->type == ESP_BT_AUDIO_PLAYBACK_METADATA_TITLE) {
-                target = title;
-                target_size = sizeof(title);
+                bt_ui_update_track(ui, text, NULL);
             } else if (event_data->type == ESP_BT_AUDIO_PLAYBACK_METADATA_ARTIST) {
-                target = artist;
-                target_size = sizeof(artist);
-            }
-            if (target != NULL) {
-                size_t copy_len = event_data->length < target_size - 1 ? event_data->length : target_size - 1;
-                memcpy(target, event_data->value, copy_len);
-                target[copy_len] = '\0';
-                bt_ui_update_track(ui, title[0] ? title : NULL, artist[0] ? artist : NULL);
+                bt_ui_update_track(ui, NULL, text);
             }
         }
 #endif  /* CONFIG_EXAMPLE_BT_UI_ENABLE */

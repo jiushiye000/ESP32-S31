@@ -107,18 +107,19 @@ writer 自身错误日志只到串口，不递归写卡。大量串口打印本�
 扩展新 profile 时，先开启真实角色与对应 compile-time traces，再补能力判断和
 测试；不可只解除灰显。当前开关不控制配对策略、协议参数或 Controller 实验。
 
-## 本轮未实施的下一步
+## 显示改造（2026-10-12 已实现，板端待验收）
 
 抗撕裂已找到当前 `esp_lvgl_port 2.9.0` 的现成 RGB 方案：硬件 `num_fbs=2`、
 PSRAM framebuffer、800×480 全屏 LVGL buffer、`direct_mode=true`、
 `avoid_tearing=true`；由官方 port 完成 VSYNC 同步。不能只打开 direct_mode。
 当前单硬件 framebuffer 与 LVGL double_buffer 并不等价。
 两块 RGB565 framebuffer 约占 1.46 MiB PSRAM；先不混入 bounce-buffer 模式。
-本轮没有修改显示配置，仍需下一轮实施并肉眼/音频共存验证。
+现通过 Board Manager 显式 amend 实施，保留官方 LCD 时序/引脚；仍需肉眼/音频共存验证。
 参考[官方 RGB 示例](https://github.com/espressif/esp-bsp/blob/master/components/esp_lvgl_port/examples/rgb_lcd/main/main.c)。
 
-Media 的真实 Cover Art、日文/韩文字体、播放/暂停图标列入后续，尚未修复；
-不要把当前占位图片当作已收到专辑封面。
+Media 已启用官方 Cover Art、补日韩静态 fallback 字库、修正播放/暂停图标。
+不要把占位图片当作已收到专辑封面；快速切歌的在途旧图仍有 GMF 回调身份限制。
+实现、配置迁移和验收步骤见 [显示与 Media 指南](MEDIA_DISPLAY_GUIDE.md)。
 
 ## 上板验收清单
 

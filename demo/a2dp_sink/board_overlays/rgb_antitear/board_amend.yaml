@@ -1,0 +1,4 @@
+version: "1.0"
+description: "Korvo-1 RGB double framebuffer with official LVGL VSYNC synchronization"
+apply:
+  - lcd.yaml

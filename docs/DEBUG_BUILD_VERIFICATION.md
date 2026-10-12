@@ -7,7 +7,8 @@
 实现模块级 DEBUG、屏幕/CLI 统一控制、NVS 设置和有界 SD 文本日志；去掉 Debug 页
 历史日志列表。保留 A2DP Sink / AVRCP，未开启 HFP、LE Audio、Cover Art。
 未修改 IDF、GMF 子模块、managed components、manifest 或锁文件。
-屏幕抗撕裂及 Media 三项改造尚未实施，方案见 [Debug 指南](DEBUG_GUIDE.md)。
+截至本报告（2026-10-10），屏幕抗撕裂及 Media 三项改造尚未实施。
+后续 2026-10-12 的实现与验证见 [显示与 Media 指南](MEDIA_DISPLAY_GUIDE.md)。
 
 ## 测试与审查
 

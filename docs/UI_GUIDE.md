@@ -9,7 +9,7 @@ ESP-GMF v1.0、Board Manager 0.7.3~1、esp_lvgl_port 2.9.0 和 LVGL 9.5.0。
 - `bt_ui_init()` 使用官方 `lvgl_port_add_disp_rgb()`、`lvgl_port_add_touch()`。
 - `bt_ui_media_create()` 是原例程播放器，继续提供歌曲信息和 AVRCP 控制。
 - Debug tab 只用 LVGL 自带的 tabview、label、button、switch、flex 和 timer。
-- 原媒体/封面更新沿用官方 LVGL port 锁；新诊断状态采用短临界区快照和
+- 媒体 widget 更新沿用官方 LVGL port 锁，封面在独立 worker 中解码、加锁安装；诊断状态采用短临界区快照和
   LVGL timer 每 500 ms 刷新模块开关与存储状态，未增加第二个 LVGL 调度任务。
 
 官方入口：
@@ -60,8 +60,10 @@ DEMO_UI=1 ./scripts/flash_demo.sh /dev/ttyUSB0
 ## 页面与日志
 
 启动后默认打开 Debug 页，未连接时也可查看；点击 Media 切到官方播放器。
-当前 A2DP Sink 基线没有 HFP，不显示拨号页；未启用 AVRCP Cover Art，
-播放器显示占位封面，歌曲标题/歌手是否提供取决于手机播放器。
+当前 A2DP Sink 基线没有 HFP，不显示拨号页。屏幕配置启用 AVRCP Cover Art，
+只有收到真实 JPEG 才显示封面，否则显示 `Cover not received` 占位提示。
+歌曲信息和封面是否提供取决于手机及播放器。字体与抗撕裂、旧配置迁移、
+快速切歌边界见 [显示与 Media 指南](MEDIA_DISPLAY_GUIDE.md)。
 
 Debug 页现在是模块级控制面板，不在屏幕上滚动打印日志。A2DP、AVRCP、
 AVDTP、AVCTP、HCI、L2CAP、GAP、SDP、OSI 等独立开关，未编译模块灰显；

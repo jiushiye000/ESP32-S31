@@ -44,7 +44,7 @@ typedef struct {
     void *end_call_ctx;                                /*!< Context passed to end_call_cb */
     void (*answer_call_cb)(void *ctx);                 /*!< Answer button pressed — only shown during incoming state */
     void *answer_call_ctx;                             /*!< Context passed to answer_call_cb */
-    void (*play_pause_cb)(bool want_play, void *ctx);  /*!< Play/pause toggled */
+    esp_err_t (*play_pause_cb)(bool want_play, void *ctx); /*!< ESP_OK means command accepted, not confirmed playback */
     void *play_pause_ctx;                              /*!< Context passed to play_pause_cb */
     void (*prev_cb)(void *ctx);                        /*!< Previous-track button pressed */
     void (*next_cb)(void *ctx);                        /*!< Next-track button pressed */
@@ -118,7 +118,7 @@ int bt_ui_get_volume(const bt_ui_t *ui);
  * @brief  Update the play/pause button to reflect playback state.
  *
  * @param[in]  ui           UI handle from bt_ui_create().
- * @param[in]  play_status  Playback status value (non-zero = playing).
+ * @param[in]  play_status  ESP_BT_AUDIO_PLAYBACK_STATUS_* (only PLAYING shows pause).
  */
 void bt_ui_update_playback_status(bt_ui_t *ui, uint32_t play_status);
 
@@ -194,7 +194,7 @@ lv_obj_t *bt_ui_splash_create(lv_obj_t *parent, const char *device_name);
  *       - NULL   on failure
  */
 lv_obj_t *bt_ui_media_create(lv_obj_t *parent,
-                             void (*play_pause_cb)(bool want_play, void *ctx), void *play_pause_ctx,
+                             esp_err_t (*play_pause_cb)(bool want_play, void *ctx), void *play_pause_ctx,
                              void (*prev_cb)(void *ctx), void (*next_cb)(void *ctx), void *prev_next_ctx);
 
 /**
@@ -227,11 +227,13 @@ void bt_ui_media_set_stream_type(lv_obj_t *media_root, bt_ui_media_stream_type_t
 /**
  * @brief  Set the cover art image from encoded image data.
  *
- *         Takes ownership of \a data; the caller must not free it after this call.
+ *         Borrows \a data for synchronous decoding; the caller retains ownership.
+ *         Prefer bt_ui_post_cover() to decode outside the LVGL lock on a worker.
+ *         This low-level function requires the caller to hold the LVGL lock.
  *         Pass NULL data or zero size to clear the current cover image.
  *
  * @param[in]  media_root  Media root object returned by bt_ui_media_create().
- * @param[in]  data        Encoded image data (e.g. JPEG). Ownership is transferred.
+ * @param[in]  data        Borrowed encoded image data (JPEG).
  * @param[in]  size        Size of the image data in bytes.
  */
 void bt_ui_media_set_cover_image(lv_obj_t *media_root, const uint8_t *data, size_t size);

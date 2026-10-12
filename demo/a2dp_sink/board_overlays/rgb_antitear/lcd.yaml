@@ -1,0 +1,6 @@
+devices:
+  - name: display_lcd
+    config:
+      rgb_panel_config:
+        num_fbs: 2
+        bounce_buffer_size_px: 0

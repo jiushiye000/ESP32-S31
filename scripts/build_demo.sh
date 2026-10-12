@@ -19,6 +19,8 @@ idf=("${idf_python}" "${IDF_PATH}/tools/idf.py" --preview
 
 cd "${demo_dir}"
 board_defaults="components/gen_bmgr_codes/board_manager.defaults"
+board_config="components/gen_bmgr_codes/gen_board_device_config.c"
+board_amend="board_overlays/rgb_antitear"
 board_defaults_present=0
 if [[ -f "${board_defaults}" ]]; then
     board_defaults_present=1
@@ -35,8 +37,11 @@ fi
 
 if [[ "${REGENERATE_BOARD:-0}" == "1" ]] ||
     [[ ! -f "${board_defaults}" ]] ||
+    [[ "${board_amend}/board_amend.yaml" -nt "${board_config}" ]] ||
+    [[ "${board_amend}/lcd.yaml" -nt "${board_config}" ]] ||
+    ! grep -Fq '.num_fbs = 2,' "${board_config}" ||
     ! grep -Fq 'CONFIG_ESP_BOARD_NAME="esp32_s31_korvo_1"' "${board_defaults}"; then
-    "${idf[@]}" bmgr -b esp32_s31_korvo_1
+    "${idf[@]}" bmgr -b esp32_s31_korvo_1 -a "${board_amend}"
 fi
 
 if [[ "${board_defaults_present}" == "0" ]]; then
@@ -70,7 +75,7 @@ if ! grep -Fqx 'CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y' "${config_path}"; then
     exit 1
 fi
 if [[ "${DEMO_UI:-0}" == "1" ]]; then
-    for required in 'CONFIG_EXAMPLE_BT_UI_ENABLE=y' 'CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUPPORT=y' 'CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUB_RGB_SUPPORT=y' 'CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUPPORT=y' 'CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUB_I2C_SUPPORT=y' 'CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y'; do
+    for required in 'CONFIG_EXAMPLE_BT_UI_ENABLE=y' 'CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUPPORT=y' 'CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUB_RGB_SUPPORT=y' 'CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUPPORT=y' 'CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUB_I2C_SUPPORT=y' 'CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y' 'CONFIG_BT_AVRCP_CT_COVER_ART_ENABLED=y'; do
         if ! grep -Fqx "${required}" "${config_path}"; then
             printf 'Invalid UI config: missing %s in %s. Preserve it and regenerate from defaults.\n' "${required}" "${config_path}" >&2
             exit 1

@@ -122,4 +122,5 @@ Debug 页提供各协议模块的独立开关与 SD 文本日志保存设置，�
 两个构建模式都编译保留 DEBUG，默认协议栈 WARN、应用 INFO；开启单个模块才提高级别。
 
 页面、现有配置迁移与上板步骤见 [UI 指南](docs/UI_GUIDE.md)，模块映射、SD 限制和
-框架扩展见 [Debug 指南](docs/DEBUG_GUIDE.md)。抗撕裂与 Media 改造仍是后续迭代。
+框架扩展见 [Debug 指南](docs/DEBUG_GUIDE.md)。双 framebuffer 抗撕裂、真实 Cover Art、
+日韩字库和播放图标的实现及板端验收见 [显示与 Media 指南](docs/MEDIA_DISPLAY_GUIDE.md)。

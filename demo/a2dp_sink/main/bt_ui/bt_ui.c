@@ -26,6 +26,9 @@
 #include "dev_lcd_touch.h"
 #include "bt_ui.h"
 #include "lvgl.h"
+#if LVGL_VERSION_MAJOR >= 9
+#include "src/misc/cache/instance/lv_image_cache.h"
+#endif
 #include "jpeg_decoder.h"
 #include "esp_bt_audio_defs.h"
 #include "esp_bt_audio_playback.h"
@@ -34,13 +37,14 @@
 #include "bt_debug.h"
 
 #define UI_COVER_QUEUE_SIZE       2
+#define UI_COVER_MAX_BYTES        (512 * 1024)
 #define UI_COVER_TASK_STACK_SIZE  4096
 #define UI_COVER_TASK_PRIO        5
 #define LVGL_DRAW_BUF_LINES       (BT_UI_HEIGHT / 2)
 #define UI_TAB_BAR_HEIGHT         44
 
-#define BT_UI_FONT_LARGE       (&lv_font_notosanssc_regular_28)
-#define BT_UI_FONT_MEDIUM      (&lv_font_notosanssc_regular_28)
+#define BT_UI_FONT_LARGE       (&s_media_font)
+#define BT_UI_FONT_MEDIUM      (&s_media_font)
 #define BT_UI_FONT_SMALL       (&lv_font_montserrat_20)
 #define BT_UI_FONT_ICON        (&lv_font_montserrat_28)
 #define BT_UI_FONT_COVER_ICON  (&lv_font_montserrat_32)
@@ -68,6 +72,14 @@
 #define VOL_BAR_RIGHT_GAP  12
 
 LV_FONT_DECLARE(lv_font_notosanssc_regular_28)
+LV_FONT_DECLARE(lv_font_notosansjk_regular_28)
+static lv_font_t s_media_font;
+
+static void ui_font_init(void)
+{
+    s_media_font = lv_font_notosanssc_regular_28;
+    s_media_font.fallback = &lv_font_notosansjk_regular_28;
+}
 
 #if CONFIG_GMF_EXAMPLE_AUDIO_TECH_LE
 LV_IMAGE_DECLARE(speakers_dark_dark_small);
@@ -99,7 +111,16 @@ LV_IMAGE_DECLARE(bis_stream_icon);
 typedef struct {
     uint8_t  *data;  /*!< Encoded image buffer owned by the UI task */
     size_t    size;  /*!< Encoded image buffer size in bytes */
+    uint32_t  generation; /*!< App queue generation, NOT the remote track UID */
 } ui_cover_msg_t;
+
+typedef struct {
+    uint8_t *data;
+    esp_jpeg_image_output_t image;
+} ui_decoded_cover_t;
+
+static ui_decoded_cover_t ui_cover_decode(const uint8_t *data, size_t size);
+static void ui_cover_install(lv_obj_t *media, ui_decoded_cover_t *cover);
 
 typedef enum {
     UI_DEBUG_CONNECTION,
@@ -144,6 +165,8 @@ struct bt_ui_t {
     esp_bt_audio_stream_handle_t  stream_type_stream;        /*!< Stream used to derive media placeholder state */
     bool                          stream_type_is_broadcast;  /*!< True when stream_type_stream is a BIS stream */
     QueueHandle_t                 cover_queue;               /*!< Queue carrying cover image updates */
+    portMUX_TYPE                  cover_mux;
+    uint32_t                      cover_generation;
     lv_obj_t                     *debug_status;
     lv_obj_t                     *debug_switches[32];
     lv_obj_t                     *debug_levels[32];
@@ -282,13 +305,21 @@ static void bt_ui_cover_task(void *arg)
         if (xQueueReceive(ui->cover_queue, &msg, portMAX_DELAY) != pdTRUE) {
             continue;
         }
-        if (ui->media != NULL && msg.data != NULL && msg.size > 0) {
-            lvgl_port_lock(0);
-            bt_ui_media_set_cover_image(ui->media, msg.data, msg.size);
-            lvgl_port_unlock();
-        } else if (msg.data != NULL) {
-            free(msg.data);
+        portENTER_CRITICAL(&ui->cover_mux);
+        bool current = msg.generation == ui->cover_generation;
+        portEXIT_CRITICAL(&ui->cover_mux);
+        ui_decoded_cover_t decoded = {0};
+        if (current && msg.data != NULL) {
+            decoded = ui_cover_decode(msg.data, msg.size); /* Blocking decode outside LVGL. */
         }
+        free(msg.data);
+        lvgl_port_lock(0);
+        portENTER_CRITICAL(&ui->cover_mux);
+        current = msg.generation == ui->cover_generation;
+        portEXIT_CRITICAL(&ui->cover_mux);
+        if (current && ui->media != NULL) ui_cover_install(ui->media, &decoded);
+        lvgl_port_unlock();
+        free(decoded.data); /* Install takes ownership on success. */
     }
 }
 
@@ -421,6 +452,7 @@ static void debug_create(bt_ui_t *ui, lv_obj_t *parent, const char *device_name)
 {
     lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(parent, lv_color_hex(0x102840), 0);
+    lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(parent, lv_color_hex(0xe8eef4), 0);
     lv_obj_set_style_text_font(parent, BT_UI_FONT_SMALL, 0);
     lv_obj_t *name = lv_label_create(parent);
@@ -444,6 +476,7 @@ static void debug_create(bt_ui_t *ui, lv_obj_t *parent, const char *device_name)
     lv_obj_set_pos(list, 16, 88);
     lv_obj_set_size(list, BT_UI_WIDTH - 32, CONTENT_H - 170);
     lv_obj_set_style_bg_color(list, lv_color_hex(0x102840), 0);
+    lv_obj_set_style_text_color(list, lv_color_hex(0xf4f7fb), 0);
     lv_obj_set_style_pad_all(list, 8, 0);
     lv_obj_set_style_pad_column(list, 8, 0);
     lv_obj_set_style_pad_row(list, 8, 0);
@@ -455,14 +488,18 @@ static void debug_create(bt_ui_t *ui, lv_obj_t *parent, const char *device_name)
         lv_obj_set_size(row, 364, 68);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_style_bg_color(row, lv_color_hex(0x162f47), 0);
+        /* Cards own their theme text style; the page foreground is not enough. */
+        lv_obj_set_style_text_color(row, lv_color_hex(0xf4f7fb), 0);
         lv_obj_set_style_pad_all(row, 8, 0);
         lv_obj_t *title = lv_label_create(row);
         lv_label_set_text(title, module->title);
+        lv_obj_set_style_text_color(title, lv_color_hex(0xf4f7fb), 0);
         lv_obj_set_width(title, 270);
         lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
         lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
         ui->debug_levels[i] = lv_label_create(row);
         lv_obj_set_style_text_font(ui->debug_levels[i], &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(ui->debug_levels[i], lv_color_hex(0xc9daea), 0);
         lv_obj_align(ui->debug_levels[i], LV_ALIGN_BOTTOM_LEFT, 0, 0);
         ui->debug_switches[i] = lv_switch_create(row);
         lv_obj_set_size(ui->debug_switches[i], 56, 28);
@@ -529,6 +566,18 @@ esp_err_t bt_ui_init(void)
             },
         };
         disp_cfg.flags.direct_mode = rgb_cfg.flags.avoid_tearing;
+        if (rgb_cfg.flags.avoid_tearing) {
+            /* esp_lvgl_port borrows the two LCD framebuffers and waits for VSYNC. */
+            disp_cfg.buffer_size = lcd_cfg->lcd_width * lcd_cfg->lcd_height;
+            disp_cfg.double_buffer = false;
+            disp_cfg.flags.full_refresh = false;
+            disp_cfg.flags.sw_rotate = false;
+        } else {
+            ESP_LOGW(TAG, "RGB anti-tearing OFF: regenerate the rgb_antitear board amend");
+        }
+        ESP_LOGI(TAG, "RGB LCD: framebuffers=%d, avoid_tearing=%d, direct_mode=%d",
+                 lcd_cfg->sub_cfg.rgb.panel_config.num_fbs, rgb_cfg.flags.avoid_tearing,
+                 disp_cfg.flags.direct_mode);
         disp = lvgl_port_add_disp_rgb(&disp_cfg, &rgb_cfg);
 #endif  /* CONFIG_ESP_BOARD_DEV_DISPLAY_LCD_SUB_RGB_SUPPORT */
     } else {
@@ -566,6 +615,7 @@ bt_ui_t *bt_ui_create(const char *device_name, const bt_ui_config_t *config)
     }
     ui->volume = 50;
     ui->debug_mux = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
+    ui->cover_mux = (portMUX_TYPE)portMUX_INITIALIZER_UNLOCKED;
     ui->debug_snapshot.volume = 50;
     ui->debug_snapshot.stream_state = UINT32_MAX;
     ui->debug_snapshot.playback_state = UINT32_MAX;
@@ -586,6 +636,7 @@ bt_ui_t *bt_ui_create(const char *device_name, const bt_ui_config_t *config)
     }
 
     lvgl_port_lock(0);
+    ui_font_init();
     lv_obj_t *scr = lv_scr_act();
     ui->splash = bt_ui_splash_create(scr, device_name);
     lv_obj_add_flag(ui->splash, LV_OBJ_FLAG_HIDDEN);
@@ -640,6 +691,11 @@ void bt_ui_set_connected(bt_ui_t *ui, bool connected, const uint8_t addr[6])
     ui_debug_event_t event = {.type = UI_DEBUG_CONNECTION, .connected = connected};
     memcpy(event.addr, addr, sizeof(event.addr));
     debug_post(ui, &event);
+    if (!connected) {
+        bt_ui_post_cover(ui, NULL, 0);
+        bt_ui_update_track(ui, "", "");
+        bt_ui_update_playback_status(ui, ESP_BT_AUDIO_PLAYBACK_STATUS_STOPPED);
+    }
 }
 
 void bt_ui_update_volume(bt_ui_t *ui, int volume)
@@ -756,22 +812,37 @@ void bt_ui_update_call_state(bt_ui_t *ui, int state, const char *number)
 
 void bt_ui_post_cover(bt_ui_t *ui, const uint8_t *data, size_t size)
 {
-    if (ui == NULL || ui->cover_queue == NULL || data == NULL || size == 0) {
+    if (ui == NULL || ui->cover_queue == NULL) {
         return;
     }
-    uint8_t *copy = heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_DEFAULT);
-    if (copy == NULL) {
-        ESP_LOGW(TAG, "No memory for cover art copy, size %u", (unsigned)size);
-        return;
+    bool clear = data == NULL || size == 0;
+    portENTER_CRITICAL(&ui->cover_mux);
+    if (clear) ++ui->cover_generation;
+    uint32_t generation = ui->cover_generation;
+    portEXIT_CRITICAL(&ui->cover_mux);
+    uint8_t *copy = NULL;
+    if (!clear) {
+        if (size > UI_COVER_MAX_BYTES) {
+            ESP_LOGW(TAG, "Cover art exceeds UI input limit: %u", (unsigned)size);
+            return;
+        }
+        copy = heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_DEFAULT);
+        if (copy == NULL) {
+            ESP_LOGW(TAG, "No memory for cover art copy, size %u", (unsigned)size);
+            return;
+        }
+        memcpy(copy, data, size);
     }
-    memcpy(copy, data, size);
     ui_cover_msg_t msg = {
         .data = copy,
-        .size = size,
+        .size = clear ? 0 : size,
+        .generation = generation,
     };
     if (xQueueSend(ui->cover_queue, &msg, 0) != pdTRUE) {
-        free(copy);
-        ESP_LOGW(TAG, "Cover art UI queue full, drop update");
+        /* Bounded, non-blocking latest-update policy; never leak evicted payloads. */
+        ui_cover_msg_t old;
+        if (xQueueReceive(ui->cover_queue, &old, 0) == pdTRUE) free(old.data);
+        if (xQueueSend(ui->cover_queue, &msg, 0) != pdTRUE) free(copy);
     }
 }
 
@@ -814,7 +885,7 @@ typedef struct {
 #else
     lv_img_dsc_t  cover_img_dsc;   /*!< Persistent descriptor for LVGL (src points here) */
 #endif  /* LVGL_VERSION_MAJOR >= 9 */
-    void (*play_pause_cb)(bool want_play, void *ctx);  /*!< Play/pause callback */
+    esp_err_t (*play_pause_cb)(bool want_play, void *ctx); /*!< Play/pause callback */
     void *play_pause_ctx;                              /*!< Context passed to play_pause_cb */
     void (*prev_cb)(void *ctx);                        /*!< Previous-track callback */
     void (*next_cb)(void *ctx);                        /*!< Next-track callback */
@@ -829,10 +900,12 @@ static void btn_play_pause_click_cb(lv_event_t *e)
     lv_obj_t *btn = (lv_obj_t *)lv_event_get_target(e);
     lv_obj_t *root = lv_obj_get_parent(lv_obj_get_parent(lv_obj_get_parent(btn)));
     bt_ui_media_refs_t *refs = root ? (bt_ui_media_refs_t *)lv_obj_get_user_data(root) : NULL;
-    if (refs && refs->play_pause_cb) {
+    if (refs) {
         /* VALUE_CHANGED runs after toggle: checked => user requested play */
         bool want_play = lv_obj_has_state(btn, LV_STATE_CHECKED);
-        refs->play_pause_cb(want_play, refs->play_pause_ctx);
+        esp_err_t ret = refs->play_pause_cb ? refs->play_pause_cb(want_play, refs->play_pause_ctx) : ESP_ERR_INVALID_STATE;
+        /* Show the accepted request immediately; phone notifications remain authoritative. */
+        bt_ui_media_set_playing(root, ret == ESP_OK ? want_play : !want_play);
     }
 }
 
@@ -935,35 +1008,46 @@ void bt_ui_media_set_stream_type(lv_obj_t *media_root, bt_ui_media_stream_type_t
     lv_obj_clear_flag(refs->cover_placeholder, LV_OBJ_FLAG_HIDDEN);
 }
 
-void bt_ui_media_set_cover_image(lv_obj_t *media_root, const uint8_t *data, size_t size)
+/* Guard the official JPEG info reader's marker accesses before calling it.
+ * This is bounds validation, not a replacement JPEG decoder. Only baseline SOF0
+ * is supported by esp_jpeg; reject dimensions that cannot fit even at 1/8 scale. */
+static bool ui_cover_header_valid(const uint8_t *data, size_t size)
 {
-    ESP_LOGD(TAG, "Set cover image: media_root=%p data=%p size=%u", (void *)media_root, (void *)data,
-             (unsigned)size);
-    if (media_root == NULL) {
-        ESP_LOGW(TAG, "Set cover image: media_root is NULL");
-        return;
-    }
-    bt_ui_media_refs_t *refs = (bt_ui_media_refs_t *)lv_obj_get_user_data(media_root);
-    if (refs == NULL || refs->cover_cont == NULL) {
-        ESP_LOGW(TAG, "Set cover image: refs=%p or cover_cont is NULL", (void *)refs);
-        return;
-    }
-    if (data == NULL || size == 0) {
-        ESP_LOGD(TAG, "Set cover image: clear cover, data=%p size=%u", (void *)data, (unsigned)size);
-        if (refs->cover_img != NULL) {
-            lv_obj_add_flag(refs->cover_img, LV_OBJ_FLAG_HIDDEN);
+    if (data == NULL || size < 4 || size > UI_COVER_MAX_BYTES || data[0] != 0xff || data[1] != 0xd8) return false;
+    unsigned components = 0;
+    for (size_t pos = 2; pos <= size - 4;) {
+        uint16_t len = ((uint16_t)data[pos + 2] << 8) | data[pos + 3];
+        if (data[pos] != 0xff || len <= 2 || (size_t)len > size - pos - 2) return false;
+        if (data[pos + 1] == 0xc0) {
+            if (components != 0 || len < 8 || data[pos + 4] != 8) return false;
+            unsigned h = ((unsigned)data[pos + 5] << 8) | data[pos + 6];
+            unsigned w = ((unsigned)data[pos + 7] << 8) | data[pos + 8];
+            components = data[pos + 9];
+            if ((components != 1 && components != 3) || len != 8 + 3 * components ||
+                h == 0 || w == 0 || h > COVER_IMG_SIZE * 8 || w > COVER_IMG_SIZE * 8) return false;
+        } else if (data[pos + 1] == 0xda) {
+            /* Validate every pre-scan segment, not just those before SOF0.
+             * Stop at SOS: entropy bytes are not length-prefixed segments. */
+            if (components == 0 || len != 6 + 2 * components || data[pos + 4] != components) return false;
+            return pos + 2 + len < size;
+        } else if (data[pos + 1] == 0xdd) {
+            if (len != 4) return false;
+        } else if (data[pos + 1] != 0xc4 && data[pos + 1] != 0xdb && data[pos + 1] != 0xfe &&
+                   (data[pos + 1] < 0xe0 || data[pos + 1] > 0xef)) {
+            return false; /* No progressive/duplicate frame or standalone marker. */
         }
-        if (refs->cover_placeholder != NULL) {
-            lv_obj_clear_flag(refs->cover_placeholder, LV_OBJ_FLAG_HIDDEN);
-        }
-        if (refs->cover_data != NULL) {
-            free(refs->cover_data);
-            refs->cover_data = NULL;
-            refs->cover_size = 0;
-        }
-        return;
+        pos += 2 + len;
     }
+    return false;
+}
 
+static ui_decoded_cover_t ui_cover_decode(const uint8_t *data, size_t size)
+{
+    ui_decoded_cover_t result = {0};
+    if (!ui_cover_header_valid(data, size)) {
+        ESP_LOGW(TAG, "Cover art rejected: invalid/oversized baseline JPEG header");
+        return result;
+    }
     esp_jpeg_image_cfg_t cfg = {
         .indata = (uint8_t *)data,
         .indata_size = (uint32_t)size,
@@ -978,10 +1062,8 @@ void bt_ui_media_set_cover_image(lv_obj_t *media_root, const uint8_t *data, size
     esp_jpeg_image_output_t info;
     esp_err_t err = esp_jpeg_get_image_info(&cfg, &info);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Set cover image failed: esp_jpeg_get_image_info scale 1/1 failed, %s",
-                 esp_err_to_name(err));
-        free((void *)data);
-        return;
+        ESP_LOGW(TAG, "Cover art info failed: %s", esp_err_to_name(err));
+        return result;
     }
     uint32_t src_w = (uint32_t)info.width;
     uint32_t src_h = (uint32_t)info.height;
@@ -999,38 +1081,58 @@ void bt_ui_media_set_cover_image(lv_obj_t *media_root, const uint8_t *data, size
     }
     cfg.out_scale = scale;
     if (esp_jpeg_get_image_info(&cfg, &info) != ESP_OK) {
-        ESP_LOGE(TAG, "Set cover image failed: esp_jpeg_get_image_info scale %d failed", (int)scale);
-        free((void *)data);
-        return;
+        return result;
     }
-    ESP_LOGD(TAG, "Set cover image: decode scale=%d out %ux%u output_len=%u", (int)scale,
-             (unsigned)info.width, (unsigned)info.height, (unsigned)info.output_len);
-
-    uint8_t *outbuf = (uint8_t *)malloc(info.output_len);
+    /* get_image_info returns unscaled dimensions, but scaled output_len. */
+    unsigned divisor = 1U << (unsigned)scale;
+    if (info.width / divisor == 0 || info.height / divisor == 0 ||
+        info.width / divisor > COVER_IMG_SIZE || info.height / divisor > COVER_IMG_SIZE ||
+        info.output_len == 0 || info.output_len > COVER_IMG_SIZE * COVER_IMG_SIZE * 2) return result;
+    uint8_t *outbuf = heap_caps_malloc_prefer(info.output_len, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_DEFAULT);
     if (outbuf == NULL) {
-        ESP_LOGE(TAG, "Set cover image failed: malloc(%u) failed", (unsigned)info.output_len);
-        free((void *)data);
-        return;
+        ESP_LOGW(TAG, "No memory for decoded cover: %u", (unsigned)info.output_len);
+        return result;
     }
     cfg.outbuf = outbuf;
     cfg.outbuf_size = (uint32_t)info.output_len;
     esp_jpeg_image_output_t outimg;
     err = esp_jpeg_decode(&cfg, &outimg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Set cover image failed: esp_jpeg_decode failed, %s", esp_err_to_name(err));
+    if (err != ESP_OK || outimg.width == 0 || outimg.height == 0 ||
+        outimg.width > COVER_IMG_SIZE || outimg.height > COVER_IMG_SIZE ||
+        outimg.output_len > info.output_len || outimg.output_len != (size_t)outimg.width * outimg.height * 2) {
+        ESP_LOGW(TAG, "Cover art decode failed or invalid output: %s", esp_err_to_name(err));
         free(outbuf);
-        free((void *)data);
-        return;
+        return result;
     }
     ESP_LOGD(TAG, "Set cover image: decoded %ux%u output_len=%u", (unsigned)outimg.width,
              (unsigned)outimg.height, (unsigned)outimg.output_len);
-    free((void *)data);
+    result.data = outbuf;
+    result.image = outimg;
+    return result;
+}
 
+/* Requires LVGL lock; consumes decoded pixels, never encoded caller data. */
+static void ui_cover_install(lv_obj_t *media_root, ui_decoded_cover_t *cover)
+{
+    bt_ui_media_refs_t *refs = media_root ? lv_obj_get_user_data(media_root) : NULL;
+    if (refs == NULL || refs->cover_img == NULL) return;
+    lv_obj_add_flag(refs->cover_img, LV_OBJ_FLAG_HIDDEN);
+#if LVGL_VERSION_MAJOR >= 9
+    lv_image_cache_drop(&refs->cover_dsc);
+#else
+    lv_img_cache_invalidate_src(&refs->cover_img_dsc);
+#endif
     if (refs->cover_data != NULL) {
         free(refs->cover_data);
     }
-    refs->cover_data = outbuf;
-    refs->cover_size = outimg.output_len;
+    refs->cover_data = cover->data;
+    refs->cover_size = cover->image.output_len;
+    cover->data = NULL;
+    if (refs->cover_data == NULL) {
+        lv_obj_clear_flag(refs->cover_placeholder, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    esp_jpeg_image_output_t outimg = cover->image;
 
     if (refs->cover_img != NULL) {
         uint32_t stride = (uint32_t)outimg.width * 2;  /* RGB565 = 2 bytes per pixel */
@@ -1064,8 +1166,16 @@ void bt_ui_media_set_cover_image(lv_obj_t *media_root, const uint8_t *data, size
              (unsigned)outimg.height);
 }
 
+void bt_ui_media_set_cover_image(lv_obj_t *media_root, const uint8_t *data, size_t size)
+{
+    ui_decoded_cover_t decoded = {0};
+    if (data != NULL && size != 0) decoded = ui_cover_decode(data, size);
+    ui_cover_install(media_root, &decoded);
+    free(decoded.data);
+}
+
 lv_obj_t *bt_ui_media_create(lv_obj_t *parent,
-                             void (*play_pause_cb)(bool want_play, void *ctx), void *play_pause_ctx,
+                             esp_err_t (*play_pause_cb)(bool want_play, void *ctx), void *play_pause_ctx,
                              void (*prev_cb)(void *ctx), void (*next_cb)(void *ctx), void *prev_next_ctx)
 {
     lv_obj_t *root = lv_obj_create(parent);
@@ -1097,11 +1207,13 @@ lv_obj_t *bt_ui_media_create(lv_obj_t *parent,
     lv_obj_center(cover_type_label);
 
     lv_obj_t *cover_type_desc_label = lv_label_create(cover_placeholder);
-    lv_label_set_text(cover_type_desc_label, "");
+    lv_label_set_text(cover_type_desc_label, "Cover not received");
     lv_obj_set_style_text_font(cover_type_desc_label, BT_UI_FONT_SMALL, 0);
     lv_obj_set_style_text_color(cover_type_desc_label, lv_color_hex(0xa8b8c8), 0);
     lv_obj_align_to(cover_type_desc_label, cover_type_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 8);
+#if CONFIG_GMF_EXAMPLE_AUDIO_TECH_LE
     lv_obj_add_flag(cover_type_desc_label, LV_OBJ_FLAG_HIDDEN);
+#endif
 
     lv_obj_t *cover_type_img = lv_image_create(cover_placeholder);
     lv_obj_remove_style_all(cover_type_img);
@@ -1136,24 +1248,33 @@ lv_obj_t *bt_ui_media_create(lv_obj_t *parent,
     lv_obj_set_size(name_cont, RIGHT_PANEL_W, NAME_AREA_H);
 #endif  /* CONFIG_GMF_EXAMPLE_AUDIO_TECH_LE */
     lv_obj_clear_flag(name_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(name_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(name_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(name_cont, 16, 0);
 
     lv_obj_t *name_label = lv_label_create(name_cont);
     lv_label_set_text(name_label, "-----");
-    lv_label_set_long_mode(name_label, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(name_label, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(name_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(name_label, lv_color_hex(0xe8eef4), 0);
     lv_obj_set_width(name_label, RIGHT_PANEL_W);
+#if CONFIG_GMF_EXAMPLE_AUDIO_TECH_LE
+    lv_obj_set_style_max_height(name_label, LE_TITLE_AREA_H, 0);
+#else
+    lv_obj_set_style_max_height(name_label, 160, 0);
+#endif
     lv_obj_align(name_label, LV_ALIGN_TOP_MID, 0, 8);
     lv_obj_set_style_text_font(name_label, BT_UI_FONT_LARGE, 0);
     lv_obj_set_style_text_line_space(name_label, -4, 0);
 
     lv_obj_t *artist_label = lv_label_create(name_cont);
     lv_label_set_text(artist_label, "");
-    lv_label_set_long_mode(artist_label, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(artist_label, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(artist_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(artist_label, lv_color_hex(0x9098a0), 0);
+    lv_obj_set_style_text_color(artist_label, lv_color_hex(0xc9daea), 0);
     lv_obj_set_width(artist_label, RIGHT_PANEL_W);
-    lv_obj_align_to(artist_label, name_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 44);
+    lv_obj_set_style_max_height(artist_label, 64, 0);
+    /* Flex reflows after every metadata update, including multiline CJK names. */
     lv_obj_set_style_text_font(artist_label, BT_UI_FONT_MEDIUM, 0);
     lv_obj_set_style_text_line_space(artist_label, -4, 0);
 #if CONFIG_GMF_EXAMPLE_AUDIO_TECH_LE
