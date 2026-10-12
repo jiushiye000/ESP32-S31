@@ -1,0 +1,13 @@
+﻿---
+# Allman(BSD)大括号风格，4 空格缩进，不自动换行
+BasedOnStyle: LLVM
+Language: Cpp
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 0
+BreakBeforeBraces: Allman
+PointerAlignment: Left
+SortIncludes: Never
+IndentExternBlock: NoIndent
