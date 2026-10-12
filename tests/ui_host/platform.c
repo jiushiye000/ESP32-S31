@@ -44,11 +44,13 @@ void host_run_cover_task(void) { if (!setjmp(task_exit)) cover_task(cover_arg); 
 bool lvgl_port_lock(unsigned timeout) { (void)timeout; ++locked; return true; }
 void lvgl_port_unlock(void) { assert(locked > 0); --locked; }
 void *heap_caps_malloc_prefer(size_t size, size_t count, ...) { (void)count; return malloc(size); }
+void *heap_caps_malloc(size_t size, unsigned caps) { (void)caps; return malloc(size); }
 const char *esp_err_to_name(int err) { (void)err; return "host error"; }
 int64_t esp_timer_get_time(void) { return 1; }
 esp_err_t esp_bt_audio_stream_get_codec_info(void *s, esp_bt_audio_stream_codec_info_t *i) { (void)s; (void)i; return ESP_FAIL; }
 esp_err_t esp_bt_audio_stream_get_profile(void *s, esp_bt_audio_stream_profile_t *p) { (void)s; (void)p; return ESP_FAIL; }
 /* Fake JPEG data isolates widget ownership/locking; this is not a decoder test. */
+#ifndef UI_HOST_REAL_JPEG
 esp_err_t esp_jpeg_get_image_info(esp_jpeg_image_cfg_t *cfg, esp_jpeg_image_output_t *out)
 {
     if (host_decode_fail || !cfg->indata || !cfg->indata_size) return ESP_FAIL;
@@ -63,6 +65,7 @@ esp_err_t esp_jpeg_decode(esp_jpeg_image_cfg_t *cfg, esp_jpeg_image_output_t *ou
     memset(cfg->outbuf, 0x7f, 2048);
     *out = (esp_jpeg_image_output_t){.width = 32, .height = 32, .output_len = 2048}; return ESP_OK;
 }
+#endif
 esp_err_t esp_board_manager_get_device_handle(const char *name, void **handle)
 {
     if (strcmp(name, ESP_BOARD_DEVICE_NAME_DISPLAY_LCD)) return ESP_FAIL;

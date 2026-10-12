@@ -92,6 +92,11 @@ int main(int argc, char **argv)
             printf("U+%04x font glyph: %s\n", chars[i], found && !glyph.is_placeholder ? "present" : "MISSING");
             assert(found && !glyph.is_placeholder);
         }
+        for (uint32_t ch = 0xac00; ch <= 0xd7a3; ++ch) {
+            lv_font_glyph_dsc_t glyph;
+            assert(lv_font_get_glyph_dsc(font, &glyph, ch, 0) && !glyph.is_placeholder);
+        }
+        puts("All 11172 modern Hangul syllables present");
     } else if (!strcmp(argv[1], "cover_clear")) {
         bt_ui_post_cover(ui, NULL, 0);
         assert(host_pending_covers != 0);
@@ -158,7 +163,7 @@ int main(int argc, char **argv)
         for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
             bt_metadata_text_copy(text, sizeof(text), bad[i], sizeof(bad[i])); assert(!*text);
         }
-    } else if (!strcmp(argv[1], "media_layout") || !strcmp(argv[1], "render_media")) {
+    } else if (!strcmp(argv[1], "media_layout") || !strcmp(argv[1], "media_long") || !strcmp(argv[1], "render_media")) {
         const char *title = "日本語の歌\nひらがな・カタカナ\n한국어 한글";
         bt_ui_update_track(ui, title, "中文 / 日本語 / 한국어");
         lv_obj_t *label = find_label(screen, title); assert(label);
@@ -171,6 +176,15 @@ int main(int argc, char **argv)
         lv_obj_get_coords(label, &title_area); lv_obj_get_coords(artist, &artist_area);
         if (!strcmp(argv[1], "render_media")) snapshot(screen, "/tmp/esp32-media-host.ppm");
         assert(title_area.y2 < artist_area.y1);
+        if (!strcmp(argv[1], "media_long")) {
+            char long_title[211];
+            for (unsigned i = 0; i < 70; ++i) memcpy(long_title + i * 3, "中", 3);
+            long_title[210] = 0;
+            bt_ui_update_track(ui, long_title, "Artist"); lv_obj_update_layout(screen);
+            lv_area_t area; lv_obj_get_coords(lv_obj_get_parent(label), &area);
+            lv_obj_get_coords(label, &title_area); lv_obj_get_coords(artist, &artist_area);
+            assert(title_area.y1 >= area.y1 && title_area.y2 < artist_area.y1 && artist_area.y2 <= area.y2);
+        }
     } else if (!strcmp(argv[1], "render_debug")) {
         snapshot(screen, "/tmp/esp32-debug-host.ppm");
     } else if (!strcmp(argv[1], "antitear")) {

@@ -14,6 +14,8 @@ typedef int esp_err_t;
 #define ESP_ERR_NOT_SUPPORTED 0x106
 #define ESP_ERROR_CHECK(x) assert((x) == ESP_OK)
 #define ESP_RETURN_ON_ERROR(x, tag, ...) do { int err = (x); if (err) return err; } while (0)
+#define ESP_RETURN_ON_FALSE(x, err, tag, ...) do { if (!(x)) return (err); } while (0)
+#define ESP_GOTO_ON_FALSE(x, code, label, tag, ...) do { if (!(x)) { ret = (code); goto label; } } while (0)
 #define ESP_LOGD(tag, ...) ((void)(tag))
 #define ESP_LOGI(tag, ...) ((void)(tag))
 #define ESP_LOGW(tag, ...) ((void)(tag))
@@ -22,6 +24,7 @@ typedef int esp_err_t;
 #define MALLOC_CAP_8BIT 2
 #define MALLOC_CAP_DEFAULT 4
 void *heap_caps_malloc_prefer(size_t size, size_t count, ...);
+void *heap_caps_malloc(size_t size, unsigned caps);
 const char *esp_err_to_name(int err);
 int64_t esp_timer_get_time(void);
 typedef int BaseType_t;
