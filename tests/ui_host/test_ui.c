@@ -59,7 +59,20 @@ int main(int argc, char **argv)
     bt_ui_t *ui = bt_ui_create("HOST_UI", &cfg); assert(ui);
     lv_obj_t *screen = lv_screen_active();
     lv_obj_update_layout(screen);
-    if (!strcmp(argv[1], "contrast")) {
+    if (!strcmp(argv[1], "power")) {
+        lv_obj_t *label = find_label(screen, "Bluetooth power"); assert(label);
+        lv_obj_t *page = lv_obj_get_parent(label);
+        bool found = false;
+        for (unsigned i = 0; i < lv_obj_get_child_count(page); ++i) {
+            lv_obj_t *child = lv_obj_get_child(page, i);
+            if (lv_obj_check_type(child, &lv_switch_class)) {
+                found = true;
+                /* A UI with no backend must not offer a pretend power switch. */
+                assert(lv_obj_has_state(child, LV_STATE_DISABLED));
+            }
+        }
+        assert(found);
+    } else if (!strcmp(argv[1], "contrast")) {
         lv_obj_t *label = find_label(screen, "Application / API"); assert(label);
         lv_obj_t *page = lv_obj_get_parent(lv_obj_get_parent(lv_obj_get_parent(label)));
         assert(lv_obj_get_style_bg_opa(page, LV_PART_MAIN) == LV_OPA_COVER);

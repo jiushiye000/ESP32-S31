@@ -6,7 +6,7 @@ cmake -S "${root_dir}/tests/ui_host" -B "${task_ui_build}" -G Ninja \
     -D "UI_HOST_SANITIZERS=${UI_HOST_SANITIZERS:-OFF}" > "${task_ui_build}.configure.log"
 cmake --build "${task_ui_build}" -j 8 > "${task_ui_build}.build.log" 2>&1
 failed=0
-for test_case in contrast play play_reject fonts cover_clear decode_lock cover_stale cover_decode_stale cover_failure cover_bounds cover_skip cover_queue disconnect utf8 antitear media_layout media_long; do
+for test_case in power contrast play play_reject fonts cover_clear decode_lock cover_stale cover_decode_stale cover_failure cover_bounds cover_skip cover_queue disconnect utf8 antitear media_layout media_long; do
     printf '[UI] %s\n' "${test_case}"
     if ! "${task_ui_build}/test_ui" "${test_case}"; then failed=1; fi
 done
