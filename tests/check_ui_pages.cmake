@@ -1,0 +1,65 @@
+cmake_minimum_required(VERSION 3.16)
+
+# Exercise the production source list, not a second hand-maintained test list.
+get_filename_component(demo_main "${CMAKE_CURRENT_LIST_DIR}/../demo/a2dp_sink/main" ABSOLUTE)
+set(CONFIG_EXAMPLE_BT_UI_ENABLE "${TEST_UI}")
+set(CONFIG_GMF_EXAMPLE_AUDIO_TECH_LE "${TEST_LE}")
+set(pages bt_ui.c ui_media.c ui_debug.c ui_power.c ui_dialer.c ui_display.c ui_volume.c ui_cover.c)
+
+function(idf_component_register)
+    cmake_parse_arguments(component "" "" "SRCS;INCLUDE_DIRS;REQUIRES" ${ARGN})
+    foreach(page IN LISTS pages)
+        if(TEST_UI)
+            if(NOT "bt_ui/${page}" IN_LIST component_SRCS)
+                message(FATAL_ERROR "UI must compile separate page/helper: ${page}")
+            endif()
+            if(NOT EXISTS "${demo_main}/bt_ui/${page}")
+                message(FATAL_ERROR "Missing UI source: ${page}")
+            endif()
+        elseif("bt_ui/${page}" IN_LIST component_SRCS)
+            message(FATAL_ERROR "Headless must not compile UI source: ${page}")
+        endif()
+    endforeach()
+    foreach(image cis_stream_icon bis_stream_icon speakers_dark_dark_small speakers_dark_light_small speakers_light_dark_small)
+        if(TEST_UI AND TEST_LE)
+            if(NOT "bt_ui/images/${image}.c" IN_LIST component_SRCS)
+                message(FATAL_ERROR "LE UI must retain asset: ${image}")
+            endif()
+        elseif("bt_ui/images/${image}.c" IN_LIST component_SRCS)
+            message(FATAL_ERROR "Classic/headless must not compile LE asset: ${image}")
+        endif()
+    endforeach()
+endfunction()
+
+include("${demo_main}/CMakeLists.txt")
+if(TEST_UI)
+    file(READ "${demo_main}/bt_ui/bt_ui.c" composition)
+    # Named owners protect the boundaries without locking down widget layout.
+    foreach(owner
+            "ui_media.c|lv_obj_t *bt_ui_media_create("
+            "ui_debug.c|void bt_ui_debug_create("
+            "ui_power.c|void bt_ui_power_create("
+            "ui_dialer.c|lv_obj_t *bt_ui_dialer_create("
+            "ui_display.c|esp_err_t bt_ui_init("
+            "ui_volume.c|lv_obj_t *bt_ui_volume_bar_create("
+            "ui_cover.c|void bt_ui_cover_task(")
+        string(REPLACE "|" ";" parts "${owner}")
+        list(GET parts 0 page)
+        list(GET parts 1 signature)
+        file(READ "${demo_main}/bt_ui/${page}" implementation)
+        string(FIND "${implementation}" "${signature}" present)
+        string(FIND "${composition}" "${signature}" misplaced)
+        if(present EQUAL -1 OR NOT misplaced EQUAL -1)
+            message(FATAL_ERROR "Expected implementation only in ${page}: ${signature}")
+        endif()
+    endforeach()
+    if(NOT EXISTS "${demo_main}/bt_ui/bt_ui_internal.h")
+        message(FATAL_ERROR "Pages must share an explicit private interface")
+    endif()
+    file(READ "${demo_main}/bt_ui/bt_ui.h" public_api)
+    string(FIND "${public_api}" "bt_ui_internal" exposed)
+    if(NOT exposed EQUAL -1)
+        message(FATAL_ERROR "Private page state must not leak into public API")
+    endif()
+endif()
+message(STATUS "UI=${TEST_UI}, LE=${TEST_LE}: UI page ownership PASS (not a firmware build)")

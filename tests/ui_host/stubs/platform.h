@@ -50,7 +50,7 @@ typedef enum { ESP_BT_AUDIO_STREAM_PROFILE_UNKNOWN, ESP_BT_AUDIO_STREAM_PROFILE_
 enum { ESP_BT_AUDIO_PLAYBACK_STATUS_STOPPED, ESP_BT_AUDIO_PLAYBACK_STATUS_PLAYING,
     ESP_BT_AUDIO_PLAYBACK_STATUS_PAUSED, ESP_BT_AUDIO_PLAYBACK_STATUS_FWD_SEEK,
     ESP_BT_AUDIO_PLAYBACK_STATUS_REV_SEEK, ESP_BT_AUDIO_PLAYBACK_STATUS_ERROR };
-enum { ESP_BT_AUDIO_CALL_STATE_INCOMING };
+enum { ESP_BT_AUDIO_CALL_STATE_INCOMING = 1 };
 esp_err_t esp_bt_audio_stream_get_codec_info(void *stream, esp_bt_audio_stream_codec_info_t *info);
 esp_err_t esp_bt_audio_stream_get_profile(void *stream, esp_bt_audio_stream_profile_t *profile);
 typedef struct { int unused; } lvgl_port_cfg_t;

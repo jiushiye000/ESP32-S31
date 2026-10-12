@@ -4,6 +4,7 @@
 #include <string.h>
 #include "platform.h"
 #include "bt_ui.h"
+#include "bt_debug.h"
 #include "bt_metadata_text.h"
 #include "src/draw/snapshot/lv_snapshot.h"
 static bool requested;
@@ -18,6 +19,18 @@ static esp_err_t power_request(bool enabled, void *ctx)
     return result;
 }
 static esp_err_t accepted(bool play, void *ctx) { (void)ctx; requested = play; ++requests; return result; }
+static unsigned previous_calls, next_calls, dial_calls, answer_calls, end_calls;
+static int callback_context;
+static char dial_number[32];
+static void previous(void *ctx) { assert(ctx == &callback_context); ++previous_calls; }
+static void next(void *ctx) { assert(ctx == &callback_context); ++next_calls; }
+static void dial(const char *number, void *ctx)
+{
+    assert(ctx == &callback_context); ++dial_calls;
+    snprintf(dial_number, sizeof(dial_number), "%s", number);
+}
+static void answer(void *ctx) { assert(ctx == &callback_context); ++answer_calls; }
+static void end_call(void *ctx) { assert(ctx == &callback_context); ++end_calls; }
 /* Header/SOS envelope only; the fake decoder isolates widget/ownership/locking. */
 static const uint8_t fixture[] = {0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 32, 0, 32, 1, 1, 0x11, 0,
     0xff, 0xda, 0, 8, 1, 1, 0, 0, 0x3f, 0, 0, 0xff, 0xd9};
@@ -34,6 +47,30 @@ static lv_obj_t *find_label(lv_obj_t *root, const char *text)
     if (lv_obj_check_type(root, &lv_label_class) && !strcmp(lv_label_get_text(root), text)) return root;
     for (unsigned i = 0; i < lv_obj_get_child_count(root); ++i) {
         lv_obj_t *found = find_label(lv_obj_get_child(root, i), text); if (found) return found;
+    }
+    return NULL;
+}
+static lv_obj_t *find_text(lv_obj_t *root, const char *text)
+{
+    if (lv_obj_check_type(root, &lv_label_class) && strstr(lv_label_get_text(root), text)) return root;
+    for (unsigned i = 0; i < lv_obj_get_child_count(root); ++i) {
+        lv_obj_t *found = find_text(lv_obj_get_child(root, i), text); if (found) return found;
+    }
+    return NULL;
+}
+static lv_obj_t *find_switch(lv_obj_t *parent)
+{
+    for (unsigned i = 0; i < lv_obj_get_child_count(parent); ++i) {
+        lv_obj_t *child = lv_obj_get_child(parent, i);
+        if (lv_obj_check_type(child, &lv_switch_class)) return child;
+    }
+    assert(!"switch not found"); return NULL;
+}
+static lv_obj_t *find_volume_bar(lv_obj_t *root)
+{
+    if (lv_obj_get_width(root) == 6 && lv_obj_get_height(root) == 96) return root;
+    for (unsigned i = 0; i < lv_obj_get_child_count(root); ++i) {
+        lv_obj_t *found = find_volume_bar(lv_obj_get_child(root, i)); if (found) return found;
     }
     return NULL;
 }
@@ -63,7 +100,8 @@ int main(int argc, char **argv)
     lv_init();
     lv_display_t *display = lv_display_create(800, 480);
     assert(display);
-    bt_ui_config_t cfg = {.play_pause_cb = accepted};
+    bt_ui_config_t cfg = {.play_pause_cb = accepted, .prev_cb = previous, .next_cb = next,
+        .prev_next_ctx = &callback_context};
     if (strncmp(argv[1], "power_", 6) == 0) {
         bool off = !strcmp(argv[1], "power_on") || !strcmp(argv[1], "power_error");
         power_state = (bt_power_status_t){.state = off ? BT_POWER_OFF : BT_POWER_ON, .controller_enabled = !off};
@@ -138,6 +176,75 @@ int main(int argc, char **argv)
         assert(lv_obj_has_state(button, LV_STATE_CHECKED) == (result == ESP_OK));
         bt_ui_update_playback_status(ui, ESP_BT_AUDIO_PLAYBACK_STATUS_PAUSED);
         assert(!strcmp(lv_label_get_text(play), LV_SYMBOL_PLAY));
+    } else if (!strcmp(argv[1], "media_controls")) {
+        lv_obj_send_event(lv_obj_get_parent(find_label(screen, LV_SYMBOL_PREV)), LV_EVENT_CLICKED, NULL);
+        lv_obj_send_event(lv_obj_get_parent(find_label(screen, LV_SYMBOL_NEXT)), LV_EVENT_CLICKED, NULL);
+        assert(previous_calls == 1 && next_calls == 1 && requests == 0);
+    } else if (!strcmp(argv[1], "debug_controls")) {
+        int index = bt_debug_module_find("A2D"); assert(index >= 0);
+        int other = bt_debug_module_find("AVRC"); assert(other >= 0);
+        lv_obj_t *row = lv_obj_get_parent(find_label(screen, bt_debug_module_at(index)->title));
+        lv_obj_t *control = find_switch(row);
+        lv_obj_add_state(control, LV_STATE_CHECKED);
+        lv_obj_send_event(control, LV_EVENT_VALUE_CHANGED, NULL);
+        assert(bt_debug_enabled(index) && !bt_debug_enabled(other));
+        bt_debug_set(index, false); bt_debug_set(other, true);
+        lv_tick_inc(501); lv_timer_handler();
+        assert(!lv_obj_has_state(control, LV_STATE_CHECKED));
+        lv_obj_t *other_control = find_switch(lv_obj_get_parent(find_label(screen, bt_debug_module_at(other)->title)));
+        assert(lv_obj_has_state(other_control, LV_STATE_CHECKED));
+        lv_obj_t *page = lv_obj_get_parent(find_label(screen, "Save ESP text logs to SD (serial stays on)"));
+        lv_obj_t *sd = find_switch(page);
+        lv_obj_add_state(sd, LV_STATE_CHECKED); lv_obj_send_event(sd, LV_EVENT_VALUE_CHANGED, NULL);
+        bt_debug_status_t status; bt_debug_get_status(&status); assert(status.sd_requested);
+        lv_obj_send_event(lv_obj_get_parent(find_label(screen, "All DEBUG off")), LV_EVENT_CLICKED, NULL);
+        lv_tick_inc(501); lv_timer_handler();
+        assert(!bt_debug_enabled(other) && !lv_obj_has_state(other_control, LV_STATE_CHECKED));
+        bt_debug_get_status(&status); assert(status.sd_requested && lv_obj_has_state(sd, LV_STATE_CHECKED));
+        bt_debug_sd_set(false); lv_tick_inc(501); lv_timer_handler();
+        assert(!lv_obj_has_state(sd, LV_STATE_CHECKED));
+    } else if (!strcmp(argv[1], "debug_snapshot")) {
+        uint8_t addr[6] = {1, 2, 3, 4, 5, 6};
+        bt_ui_set_connected(ui, true, addr);
+        bt_ui_update_stream_type(ui, &callback_context, ESP_BT_AUDIO_STREAM_STATE_STARTED);
+        bt_ui_update_playback_status(ui, ESP_BT_AUDIO_PLAYBACK_STATUS_PLAYING);
+        bt_ui_update_volume(ui, 170); assert(bt_ui_get_volume(ui) == 100);
+        lv_tick_inc(501); lv_timer_handler();
+        assert(find_text(screen, "Link: CONNECTED | Stream: STARTED | Playback: PLAYING"));
+        bt_ui_set_connected(ui, false, addr); lv_tick_inc(501); lv_timer_handler();
+        assert(find_text(screen, "Link: DISCONNECTED | Stream: UNKNOWN | Playback: STOPPED"));
+    } else if (!strcmp(argv[1], "volume_timer")) {
+        lv_obj_t *bar = find_volume_bar(screen); assert(bar);
+        bt_ui_volume_bar_set_level(bar, -10); lv_obj_update_layout(screen);
+        assert(lv_obj_get_height(lv_obj_get_child(bar, 0)) == 0);
+        bt_ui_volume_bar_set_level(bar, 130); lv_obj_update_layout(screen);
+        assert(lv_obj_get_height(lv_obj_get_child(bar, 0)) == lv_obj_get_height(bar));
+        lv_tick_inc(700); lv_timer_handler();
+        assert(!lv_obj_has_flag(bar, LV_OBJ_FLAG_HIDDEN));
+        bt_ui_volume_bar_set_level(bar, 50);
+        lv_tick_inc(700); lv_timer_handler();
+        assert(!lv_obj_has_flag(bar, LV_OBJ_FLAG_HIDDEN));
+        lv_tick_inc(301); lv_timer_handler();
+        assert(lv_obj_has_flag(bar, LV_OBJ_FLAG_HIDDEN));
+    } else if (!strcmp(argv[1], "dialer_controls")) {
+        lv_obj_t *page = bt_ui_dialer_create(screen, dial, &callback_context,
+            end_call, &callback_context, answer, &callback_context); assert(page);
+        lv_obj_send_event(lv_obj_get_parent(find_label(page, "1")), LV_EVENT_CLICKED, NULL);
+        lv_obj_send_event(lv_obj_get_parent(find_label(page, "2")), LV_EVENT_CLICKED, NULL);
+        assert(find_label(page, "12"));
+        lv_obj_send_event(lv_obj_get_parent(find_label(page, LV_SYMBOL_BACKSPACE)), LV_EVENT_CLICKED, NULL);
+        assert(find_label(page, "1"));
+        lv_obj_t *call = lv_obj_get_parent(find_label(page, LV_SYMBOL_CALL));
+        lv_obj_send_event(call, LV_EVENT_CLICKED, NULL);
+        assert(dial_calls == 1 && !strcmp(dial_number, "1"));
+        bt_ui_dialer_set_call_state(page, ESP_BT_AUDIO_CALL_STATE_INCOMING, "123");
+        assert(find_label(page, "Incoming  123"));
+        lv_obj_t *answer_button = lv_obj_get_parent(find_label(page, LV_SYMBOL_CALL));
+        assert(!lv_obj_has_flag(answer_button, LV_OBJ_FLAG_HIDDEN));
+        lv_obj_send_event(answer_button, LV_EVENT_CLICKED, NULL); assert(answer_calls == 1);
+        lv_obj_send_event(call, LV_EVENT_CLICKED, NULL); assert(end_calls == 1);
+        bt_ui_dialer_set_call_state(page, 0, NULL); assert(find_label(page, "Enter Number"));
+        assert(lv_obj_has_flag(answer_button, LV_OBJ_FLAG_HIDDEN));
     } else if (!strcmp(argv[1], "fonts")) {
         lv_obj_t *title = find_label(screen, "-----"); assert(title);
         const lv_font_t *font = lv_obj_get_style_text_font(title, LV_PART_MAIN);

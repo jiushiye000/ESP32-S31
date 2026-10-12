@@ -74,6 +74,11 @@ done
 
 cmake -DTEST_UI=OFF -P "${root_dir}/tests/check_ui_sources.cmake"
 cmake -DTEST_UI=ON -P "${root_dir}/tests/check_ui_sources.cmake"
+for ui_variant in OFF ON; do
+    for le_variant in OFF ON; do
+        cmake -DTEST_UI="${ui_variant}" -DTEST_LE="${le_variant}" -P "${root_dir}/tests/check_ui_pages.cmake"
+    done
+done
 bash "${root_dir}/tests/test_debug.sh"
 bash "${root_dir}/tests/test_debug_component.sh"
 bash "${root_dir}/tests/test_bt_power.sh"

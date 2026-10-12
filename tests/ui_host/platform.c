@@ -84,11 +84,13 @@ lv_display_t *lvgl_port_add_disp_rgb(const lvgl_port_display_cfg_t *cfg, const l
 }
 void *lvgl_port_add_touch(const lvgl_port_touch_cfg_t *cfg) { (void)cfg; return NULL; }
 bool bt_debug_supported(size_t i) { return i < 17; }
-bool bt_debug_enabled(size_t i) { (void)i; return false; }
-bool bt_debug_effective(size_t i) { (void)i; return false; }
+static bool debug_enabled[32];
+static bool debug_sd_requested;
+bool bt_debug_enabled(size_t i) { assert(i < 32); return debug_enabled[i]; }
+bool bt_debug_effective(size_t i) { return bt_debug_enabled(i); }
 bool bt_debug_overridden(size_t i) { (void)i; return false; }
-esp_err_t bt_debug_set(size_t i, bool on) { (void)i; (void)on; return ESP_OK; }
-void bt_debug_all_off(void) {}
-void bt_debug_sd_set(bool on) { (void)on; }
-void bt_debug_get_status(bt_debug_status_t *s) { *s = (bt_debug_status_t){0}; }
+esp_err_t bt_debug_set(size_t i, bool on) { assert(i < 32); debug_enabled[i] = on; return ESP_OK; }
+void bt_debug_all_off(void) { memset(debug_enabled, 0, sizeof(debug_enabled)); }
+void bt_debug_sd_set(bool on) { debug_sd_requested = on; }
+void bt_debug_get_status(bt_debug_status_t *s) { *s = (bt_debug_status_t){.sd_requested = debug_sd_requested}; }
 const char *bt_debug_sd_state_name(bt_debug_sd_state_t s) { (void)s; return "OFF"; }
