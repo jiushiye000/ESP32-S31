@@ -11,7 +11,8 @@ static unsigned requests;
 static esp_err_t result;
 static esp_err_t accepted(bool play, void *ctx) { (void)ctx; requested = play; ++requests; return result; }
 /* SOF0 header only; the fake decoder isolates widget/ownership/lock behavior. */
-static const uint8_t fixture[] = {0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 32, 0, 32, 1, 1, 0x11, 0};
+static const uint8_t fixture[] = {0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 32, 0, 32, 1, 1, 0x11, 0,
+    0xff, 0xda, 0, 8, 1, 1, 0, 0, 0x3f, 0, 0, 0xff, 0xd9};
 static lv_obj_t *find_cover(lv_obj_t *root)
 {
     if (lv_obj_check_type(root, &lv_image_class) && lv_obj_get_width(root) == 340) return root;
@@ -60,6 +61,8 @@ int main(int argc, char **argv)
     lv_obj_update_layout(screen);
     if (!strcmp(argv[1], "contrast")) {
         lv_obj_t *label = find_label(screen, "Application / API"); assert(label);
+        lv_obj_t *page = lv_obj_get_parent(lv_obj_get_parent(lv_obj_get_parent(label)));
+        assert(lv_obj_get_style_bg_opa(page, LV_PART_MAIN) == LV_OPA_COVER);
         lv_obj_t *row = lv_obj_get_parent(label);
         double text = light(lv_obj_get_style_text_color(label, LV_PART_MAIN));
         double bg = light(lv_obj_get_style_bg_color(row, LV_PART_MAIN));
@@ -119,12 +122,17 @@ int main(int argc, char **argv)
     } else if (!strcmp(argv[1], "cover_bounds")) {
         bt_ui_post_cover(ui, fixture, 512 * 1024 + 1);
         assert(host_pending_covers == 0);
-        for (size_t n = 1; n < sizeof(fixture); ++n) {
+        for (size_t n = 1; n < 15; ++n) {
             bt_ui_post_cover(ui, fixture, n); host_run_cover_task();
         }
         uint8_t invalid[sizeof(fixture)]; memcpy(invalid, fixture, sizeof(invalid));
         invalid[8] = 0xff; invalid[9] = 0xff;
         bt_ui_post_cover(ui, invalid, sizeof(invalid)); host_run_cover_task();
+        assert(host_decode_calls == 0);
+    } else if (!strcmp(argv[1], "cover_skip")) {
+        uint8_t malformed[19]; memcpy(malformed, fixture, 15);
+        memcpy(malformed + 15, "\xff\xe1\xff\xff", 4);
+        bt_ui_post_cover(ui, malformed, sizeof(malformed)); host_run_cover_task();
         assert(host_decode_calls == 0);
     } else if (!strcmp(argv[1], "cover_queue")) {
         for (unsigned i = 0; i < 6; ++i) bt_ui_post_cover(ui, fixture, sizeof(fixture));
