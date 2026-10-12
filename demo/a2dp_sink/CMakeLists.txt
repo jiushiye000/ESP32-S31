@@ -6,6 +6,8 @@ if(NOT DEFINED ENV{IDF_PATH})
     message(FATAL_ERROR "IDF_PATH not defined")
 endif()
 
+list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../../components")
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
 project(bt_audio)

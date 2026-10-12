@@ -25,6 +25,7 @@ Controller/Target 提供播放、暂停、切歌和音量控制。
 
 ```text
 demo/a2dp_sink/          应用源码、默认配置、分区表与组件锁文件
+components/bt_debug/    独立 Debug 后端、策略、SD 存储与串口命令
 scripts/idf_env.sh       激活本机 ESP-IDF 环境
 scripts/build_demo.sh    生成板级代码并构建固件
 scripts/flash_demo.sh    编译、烧录并打开串口监视器
@@ -129,3 +130,11 @@ System 页可手动关闭/重开蓝牙，无屏版使用 `bt_power off/on/status
 设置保持运行。适配当前 Classic Sink，不能保证恢复所有协议栈死锁或初始化异常。
 使用与硬件验收见 [蓝牙启停指南](docs/BLUETOOTH_POWER_GUIDE.md)，本地构建/测试
 边界见 [启停验证记录](docs/BLUETOOTH_POWER_VERIFICATION.md)。
+
+## 维护与渐进解耦
+
+已有 Debug 后端移到 `components/bt_debug`，由应用通过 `EXTRA_COMPONENT_DIRS`
+复用，UI 与无屏版共用同一接口。迁移不升级 SDK、不改变 NVS 模块编号或 SD 策略。
+后续 UI、音频与 Power 按验收阶段推进，避免一次性重写。
+源码来源、配置保护、生命周期契约见 [维护约定](docs/MAINTENANCE.md)，
+实际完成范围与验证结果见 [解耦验证记录](docs/REFACTOR_VERIFICATION.md)。

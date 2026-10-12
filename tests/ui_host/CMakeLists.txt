@@ -11,19 +11,21 @@ add_subdirectory("${lvgl_dir}" lvgl EXCLUDE_FROM_ALL)
 file(GLOB font_sources "${repo}/demo/a2dp_sink/main/bt_ui/fonts/*.c")
 add_executable(test_ui test_ui.c platform.c
     "${repo}/demo/a2dp_sink/main/bt_ui/bt_ui.c"
-    "${repo}/demo/a2dp_sink/main/bt_debug_policy.c"
+    "${repo}/components/bt_debug/src/bt_debug_policy.c"
     "${repo}/demo/a2dp_sink/main/bt_power_sequence.c" ${font_sources})
 target_include_directories(test_ui PRIVATE stubs "${repo}/demo/a2dp_sink/main"
+    "${repo}/components/bt_debug/include"
     "${repo}/demo/a2dp_sink/main/bt_ui" "${jpeg_dir}/include")
 target_compile_options(test_ui PRIVATE -g --coverage -ffunction-sections -fdata-sections -Wall -Wextra)
 target_link_options(test_ui PRIVATE --coverage -Wl,--gc-sections)
 target_link_libraries(test_ui PRIVATE lvgl m)
 add_executable(test_ui_jpeg test_ui_jpeg.c platform.c
     "${repo}/demo/a2dp_sink/main/bt_ui/bt_ui.c"
-    "${repo}/demo/a2dp_sink/main/bt_debug_policy.c"
+    "${repo}/components/bt_debug/src/bt_debug_policy.c"
     "${repo}/demo/a2dp_sink/main/bt_power_sequence.c" ${font_sources}
     "${jpeg_dir}/jpeg_decoder.c" "${jpeg_dir}/tjpgd/tjpgd.c")
 target_include_directories(test_ui_jpeg PRIVATE stubs "${repo}/demo/a2dp_sink/main"
+    "${repo}/components/bt_debug/include"
     "${repo}/demo/a2dp_sink/main/bt_ui" "${jpeg_dir}/include" "${jpeg_dir}/tjpgd")
 target_compile_definitions(test_ui_jpeg PRIVATE UI_HOST_REAL_JPEG=1)
 target_compile_options(test_ui_jpeg PRIVATE -g --coverage -ffunction-sections -fdata-sections -Wall -Wextra)

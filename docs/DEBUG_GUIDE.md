@@ -99,9 +99,13 @@ writer 自身错误日志只到串口，不递归写卡。大量串口打印本�
 
 ## 框架扩展点
 
-- `bt_debug_policy.c`：模块/标签 registry 与策略，新增条目只能追加，避免改变 NVS bit 编号。
-- `bt_debug.c`：ESP tag 适配、真实能力判断、NVS 与异步日志队列。
-- `bt_debug_storage.c`：与 ESP/LVGL 无关的有界文件存储。
+Debug 自有代码位于 `components/bt_debug`，不再由应用 `main` 编译：
+
+- `src/bt_debug_policy.c`：模块/标签 registry 与策略，新增条目只能追加，避免改变 NVS bit 编号。
+- `src/bt_debug.c`：ESP tag 适配、真实能力判断、NVS 与异步日志队列。
+- `src/bt_debug_storage.c`：与 ESP/LVGL 无关的有界文件存储。
+- `src/bt_debug_console.c`：独立注册 `debug` 命令，共用后端并返回注册错误。
+- `include/`：组件公共接口，UI 和应用不得 include 实现文件。
 - `bt_ui.c`：根据 registry 自动生成开关，不直接持有文件或协议栈私有状态。
 
 扩展新 profile 时，先开启真实角色与对应 compile-time traces，再补能力判断和

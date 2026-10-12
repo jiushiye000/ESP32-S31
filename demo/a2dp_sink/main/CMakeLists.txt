@@ -12,10 +12,9 @@ if(CONFIG_EXAMPLE_BT_UI_ENABLE)
     endif()
 endif()
 
-set(reqs "bt" "nvs_flash" "console" "esp_board_manager" "esp_codec_dev" "esp_lvgl_port" "lvgl" "esp_jpeg")
+set(reqs "bt" "nvs_flash" "console" "esp_board_manager" "esp_codec_dev" "esp_lvgl_port" "lvgl" "esp_jpeg" "bt_debug")
 
 idf_component_register(SRCS "main.c" "pool_reg.c" "cmd_reg.c" "stream_proc.c"
-                    "bt_debug.c" "bt_debug_policy.c" "bt_debug_storage.c"
                     "bt_power.c" "bt_power_sequence.c"
                     ${ui_srcs}
                     INCLUDE_DIRS "." "bt_ui"
