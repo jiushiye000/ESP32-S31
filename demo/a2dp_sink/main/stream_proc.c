@@ -16,6 +16,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "esp_bt_audio_defs.h"
 #include "esp_bt_audio_media.h"
@@ -26,6 +27,7 @@
 #include "esp_gmf_err.h"
 #include "esp_gmf_pipeline.h"
 #include "esp_gmf_pool.h"
+#include "esp_gmf_port.h"
 #include "esp_gmf_io_bt.h"
 #include "esp_gmf_asrc.h"
 #if CONFIG_BT_NIMBLE_ENABLED && CONFIG_BT_AUDIO && CONFIG_BT_ISO && CONFIG_SOC_MODEM_SUPPORT_ETM
@@ -50,6 +52,7 @@ typedef enum {
     STREAM_PROC_PIPELINE_PREPARE,
     STREAM_PROC_PIPELINE_RUN,
     STREAM_PROC_PIPELINE_STOP_RESET,
+    STREAM_PROC_QUIESCE,
 } stream_proc_pipeline_action_t;
 
 typedef struct {
@@ -57,6 +60,8 @@ typedef struct {
     esp_gmf_pipeline_handle_t      pipe;
     const char                    *uri;
     bool                           report_codec_input_info;
+    SemaphoreHandle_t              completion;
+    esp_gmf_err_t                 *result;
 } stream_proc_cmd_t;
 
 static const char *TAG = "STREAM_PROC";
@@ -82,6 +87,48 @@ static esp_gmf_pipeline_handle_t local2bt_pipe = NULL;
 static esp_bt_audio_stream_handle_t local2bt_stream = NULL;
 
 static QueueHandle_t stream_proc_cmd_queue = NULL;
+static SemaphoreHandle_t stream_state_lock;
+static SemaphoreHandle_t stream_stop_ack;
+static bool stream_quiescing;
+static esp_bt_audio_stream_handle_t sink_stream;
+
+/* The caller holds stream_state_lock. Wait for earlier PREPARE/RUN commands
+ * before stop/reset; stack-owned result remains alive until the persistent ack. */
+static esp_err_t stream_proc_sync_stop(esp_gmf_pipeline_handle_t pipe)
+{
+    if (!stream_stop_ack || !stream_proc_cmd_queue) return ESP_ERR_INVALID_STATE;
+    esp_gmf_err_t result = ESP_GMF_ERR_OK;
+    stream_proc_cmd_t cmd = {.action = pipe ? STREAM_PROC_PIPELINE_STOP_RESET : STREAM_PROC_QUIESCE,
+        .pipe = pipe, .completion = stream_stop_ack, .result = &result};
+    if (xQueueSend(stream_proc_cmd_queue, &cmd, portMAX_DELAY) != pdTRUE) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(stream_stop_ack, portMAX_DELAY);
+    return result == ESP_GMF_ERR_OK ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t stream_proc_quiesce(void)
+{
+    if (!stream_state_lock) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(stream_state_lock, portMAX_DELAY);
+    stream_quiescing = true;
+    esp_err_t err = stream_proc_sync_stop(NULL);
+    if (err == ESP_OK && sink_stream) {
+        /* Direct disconnect does not always produce RELEASED in GMF v1.0. */
+        stream_user_data_t *data = NULL;
+        esp_bt_audio_stream_get_local_data(sink_stream, (void **)&data);
+        esp_bt_audio_stream_set_local_data(sink_stream, NULL);
+        free(data);
+        sink_stream = NULL;
+    }
+    xSemaphoreGive(stream_state_lock);
+    return err;
+}
+
+void stream_proc_resume(void)
+{
+    xSemaphoreTake(stream_state_lock, portMAX_DELAY);
+    stream_quiescing = false;
+    xSemaphoreGive(stream_state_lock);
+}
 
 static float bt2codec_asrc_weight[STREAM_PROC_ASRC_MAX_WEIGHT_LEN];
 static float codec2bt_input_asrc_weight[STREAM_PROC_ASRC_MAX_WEIGHT_LEN];
@@ -595,12 +642,19 @@ static void stream_proc_prepare(esp_bt_audio_stream_handle_t stream, stream_user
 
 void stream_proc_state_chg(esp_bt_audio_stream_handle_t stream, esp_bt_audio_stream_state_t state)
 {
+    xSemaphoreTake(stream_state_lock, portMAX_DELAY);
+    if (stream_quiescing && (state == ESP_BT_AUDIO_STREAM_STATE_ALLOCATED ||
+                             state == ESP_BT_AUDIO_STREAM_STATE_STARTED)) {
+        xSemaphoreGive(stream_state_lock);
+        return;
+    }
     const char *state_str[] = {"ALLOCATED", "STARTED", "STOPPED", "RELEASED"};
     esp_bt_audio_stream_dir_t dir = ESP_BT_AUDIO_STREAM_DIR_UNKNOWN;
     esp_bt_audio_stream_get_dir(stream, &dir);
     ESP_LOGI(TAG, "Stream state changed: stream %p, dir %d, state %s", stream, dir, state_str[state]);
     switch (state) {
         case ESP_BT_AUDIO_STREAM_STATE_ALLOCATED: {
+            if (dir == ESP_BT_AUDIO_STREAM_DIR_SINK) sink_stream = stream;
             stream_user_data_t *user_dat = NULL;
             esp_bt_audio_stream_get_local_data(stream, (void **)&user_dat);
             if (user_dat) {
@@ -630,7 +684,10 @@ void stream_proc_state_chg(esp_bt_audio_stream_handle_t stream, esp_bt_audio_str
             esp_bt_audio_stream_get_local_data(stream, (void **)&user_d);
             if (user_d && user_d->pipe) {
                 ESP_LOGI(TAG, "Schedule reset pipeline %p", user_d->pipe);
-                stream_proc_post_pipeline_action(user_d->pipe, STREAM_PROC_PIPELINE_STOP_RESET);
+                /* GMF frees the stream immediately after STOPPED/RELEASED.
+                 * Wait for readers here instead of leaving a borrowed handle
+                 * in a still-running/queued pipeline. */
+                ESP_ERROR_CHECK(stream_proc_sync_stop(user_d->pipe));
             }
             if (dir == ESP_BT_AUDIO_STREAM_DIR_SINK) {
                 stream_proc_deinit_clk_sync();
@@ -646,17 +703,20 @@ void stream_proc_state_chg(esp_bt_audio_stream_handle_t stream, esp_bt_audio_str
                 stream_proc_deinit_playback_sync();
             }
             if (user_d) {
+                ESP_ERROR_CHECK(stream_proc_sync_stop(user_d->pipe));
                 stream_proc_destroy(user_d);
                 esp_bt_audio_stream_set_local_data(stream, NULL);
             }
             if (local2bt_stream == stream) {
                 local2bt_stream = NULL;
             }
+            if (sink_stream == stream) sink_stream = NULL;
             break;
         }
         default:
             break;
     }
+    xSemaphoreGive(stream_state_lock);
 }
 
 static esp_gmf_err_t bt2codec_pipe_event_cb(esp_gmf_event_pkt_t *pkt, void *ctx)
@@ -706,6 +766,14 @@ static void setup_pipeline_bt2codec(esp_gmf_pool_handle_t pool)
     const char *name[] = {"aud_dec", "aud_asrc"};
     esp_gmf_pool_new_pipeline(pool, "io_bt", name, sizeof(name) / sizeof(char *), "io_codec_dev", &bt2codec_pipe);
     esp_gmf_pipeline_set_event(bt2codec_pipe, bt2codec_pipe_event_cb, NULL);
+
+    /* GMF defaults to an infinite input wait. With an idle/failed peer this
+     * would keep the decoder inside acquire_read, unable to service STOP.
+     * v1.0 io_bt converts this value from RTOS ticks to milliseconds. Configure
+     * it before any RUN; timeout is treated as empty input, not a stream error. */
+    esp_gmf_element_handle_t decoder = NULL;
+    ESP_ERROR_CHECK(esp_gmf_pipeline_get_head_el(bt2codec_pipe, &decoder) == ESP_GMF_ERR_OK ? ESP_OK : ESP_FAIL);
+    ESP_ERROR_CHECK(esp_gmf_port_set_wait_ticks(ESP_GMF_ELEMENT_GET(decoder)->in, pdMS_TO_TICKS(50)) == ESP_GMF_ERR_OK ? ESP_OK : ESP_FAIL);
 
     esp_gmf_task_cfg_t cfg = DEFAULT_ESP_GMF_TASK_CONFIG();
     cfg.thread.core = 0;
@@ -786,13 +854,26 @@ static void stream_proc_task(void *arg)
                 break;
             case STREAM_PROC_PIPELINE_STOP_RESET:
                 ESP_LOGI(TAG, "Reset pipeline %p", cmd.pipe);
-                esp_gmf_pipeline_stop(cmd.pipe);
-                esp_gmf_pipeline_reset(cmd.pipe);
+                {
+                    esp_gmf_err_t err = esp_gmf_pipeline_stop(cmd.pipe);
+                    if (err == ESP_GMF_ERR_OK) err = esp_gmf_pipeline_reset(cmd.pipe);
+                    if (cmd.result) *cmd.result = err;
+                }
                 break;
+            case STREAM_PROC_QUIESCE: {
+                esp_gmf_pipeline_handle_t pipes[] = {bt2codec_pipe, codec2bt_pipe, local2bt_pipe};
+                for (size_t i = 0; i < sizeof(pipes) / sizeof(*pipes); ++i) {
+                    esp_gmf_err_t err = esp_gmf_pipeline_stop(pipes[i]);
+                    if (err == ESP_GMF_ERR_OK) err = esp_gmf_pipeline_reset(pipes[i]);
+                    if (err != ESP_GMF_ERR_OK && cmd.result) *cmd.result = err;
+                }
+                break;
+            }
             default:
                 ESP_LOGW(TAG, "Unknown stream processor action %d", cmd.action);
                 break;
         }
+        if (cmd.completion) xSemaphoreGive(cmd.completion);
     }
 }
 
@@ -819,6 +900,9 @@ static void setup_stream_proc_task(void)
 
 void stream_proc_init(esp_gmf_pool_handle_t pool)
 {
+    stream_state_lock = xSemaphoreCreateMutex();
+    stream_stop_ack = xSemaphoreCreateBinary();
+    ESP_ERROR_CHECK(stream_state_lock && stream_stop_ack ? ESP_OK : ESP_ERR_NO_MEM);
     setup_pipeline_bt2codec(pool);
     setup_pipeline_codec2bt(pool);
     setup_pipeline_local2bt(pool);

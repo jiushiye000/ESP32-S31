@@ -9,6 +9,14 @@
 static bool requested;
 static unsigned requests;
 static esp_err_t result;
+static bt_power_status_t power_state;
+static void power_status(bt_power_status_t *out, void *ctx) { (void)ctx; *out = power_state; }
+static esp_err_t power_request(bool enabled, void *ctx)
+{
+    (void)ctx; requested = enabled; ++requests;
+    if (result == ESP_OK) power_state.state = enabled ? BT_POWER_STARTING : BT_POWER_STOPPING;
+    return result;
+}
 static esp_err_t accepted(bool play, void *ctx) { (void)ctx; requested = play; ++requests; return result; }
 /* Header/SOS envelope only; the fake decoder isolates widget/ownership/locking. */
 static const uint8_t fixture[] = {0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 32, 0, 32, 1, 1, 0x11, 0,
@@ -56,10 +64,45 @@ int main(int argc, char **argv)
     lv_display_t *display = lv_display_create(800, 480);
     assert(display);
     bt_ui_config_t cfg = {.play_pause_cb = accepted};
+    if (strncmp(argv[1], "power_", 6) == 0) {
+        bool off = !strcmp(argv[1], "power_on") || !strcmp(argv[1], "power_error");
+        power_state = (bt_power_status_t){.state = off ? BT_POWER_OFF : BT_POWER_ON, .controller_enabled = !off};
+        if (!strcmp(argv[1], "power_error")) power_state.state = BT_POWER_ERROR;
+        cfg.power_request_cb = power_request;
+        cfg.power_status_cb = power_status;
+    }
     bt_ui_t *ui = bt_ui_create("HOST_UI", &cfg); assert(ui);
     lv_obj_t *screen = lv_screen_active();
     lv_obj_update_layout(screen);
-    if (!strcmp(argv[1], "power")) {
+    if (!strncmp(argv[1], "power_", 6)) {
+        lv_obj_t *label = find_label(screen, "Bluetooth power"); assert(label);
+        lv_obj_t *page = lv_obj_get_parent(label), *control = NULL;
+        for (unsigned i = 0; i < lv_obj_get_child_count(page); ++i) {
+            lv_obj_t *child = lv_obj_get_child(page, i);
+            if (lv_obj_check_type(child, &lv_switch_class)) control = child;
+        }
+        assert(control && !lv_obj_has_state(control, LV_STATE_DISABLED));
+        bool turn_on = !strcmp(argv[1], "power_on");
+        bool was_enabled = power_state.controller_enabled;
+        result = !strcmp(argv[1], "power_reject") ? ESP_FAIL : ESP_OK;
+        if (!strcmp(argv[1], "power_error")) {
+            lv_obj_t *retry = find_label(page, "Retry safe OFF"); assert(retry);
+            assert(!lv_obj_has_flag(lv_obj_get_parent(retry), LV_OBJ_FLAG_HIDDEN));
+            lv_obj_send_event(lv_obj_get_parent(retry), LV_EVENT_CLICKED, NULL);
+        } else {
+            if (turn_on) lv_obj_add_state(control, LV_STATE_CHECKED);
+            else lv_obj_remove_state(control, LV_STATE_CHECKED);
+            lv_obj_send_event(control, LV_EVENT_VALUE_CHANGED, NULL);
+        }
+        assert(requests == 1 && requested == turn_on);
+        assert(lv_obj_has_state(control, LV_STATE_CHECKED) == was_enabled);
+        assert(lv_obj_has_state(control, LV_STATE_DISABLED) == (result == ESP_OK));
+        power_state.state = turn_on ? BT_POWER_ON : BT_POWER_OFF;
+        power_state.controller_enabled = turn_on;
+        lv_tick_inc(501); lv_timer_handler();
+        assert(lv_obj_has_state(control, LV_STATE_CHECKED) == turn_on);
+        assert(!lv_obj_has_state(control, LV_STATE_DISABLED));
+    } else if (!strcmp(argv[1], "power")) {
         lv_obj_t *label = find_label(screen, "Bluetooth power"); assert(label);
         lv_obj_t *page = lv_obj_get_parent(label);
         bool found = false;

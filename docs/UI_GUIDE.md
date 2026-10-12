@@ -60,6 +60,8 @@ DEMO_UI=1 ./scripts/flash_demo.sh /dev/ttyUSB0
 ## 页面与日志
 
 启动后默认打开 Debug 页，未连接时也可查看；点击 Media 切到官方播放器。
+System 页提供蓝牙手动 OFF/ON、工作步骤和失败状态，使用方法、恢复限制及上板
+验收见 [蓝牙启停指南](BLUETOOTH_POWER_GUIDE.md)。关闭蓝牙不关闭屏幕和 Debug。
 当前 A2DP Sink 基线没有 HFP，不显示拨号页。屏幕配置启用 AVRCP Cover Art，
 只有收到真实 JPEG 才显示封面，否则显示 `Cover not received` 占位提示。
 歌曲信息和封面是否提供取决于手机及播放器。字体与抗撕裂、旧配置迁移、
@@ -103,3 +105,4 @@ AVDTP、AVCTP、HCI、L2CAP、GAP、SDP、OSI 等独立开关，未编译模块�
 本机结构校验与编译不能替代这些测试，也没有给出 GUI 运行覆盖率。
 本轮两种构建的具体结果见 [Debug 编译验证](DEBUG_BUILD_VERIFICATION.md)，
 首次 UI 迭代结果保留在 [历史编译验证](UI_BUILD_VERIFICATION.md)。
+蓝牙启停的主机测试、覆盖范围和产物见 [启停验证记录](BLUETOOTH_POWER_VERIFICATION.md)。

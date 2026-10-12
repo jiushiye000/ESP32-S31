@@ -26,6 +26,11 @@ typedef struct {
  */
 void stream_proc_init(esp_gmf_pool_handle_t pool);
 
+/* Stop queued/running readers before profile teardown. Runs on a worker, not
+ * LVGL. The vendor task-stop API can wait indefinitely for an unhealthy task. */
+esp_err_t stream_proc_quiesce(void);
+void stream_proc_resume(void);
+
 /**
  * @brief  State change callback for the stream processor
  *

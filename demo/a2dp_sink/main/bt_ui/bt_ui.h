@@ -14,6 +14,7 @@
 #include "esp_err.h"
 #include "lvgl.h"
 #include "esp_bt_audio_stream.h"
+#include "bt_power.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,6 +50,9 @@ typedef struct {
     void (*prev_cb)(void *ctx);                        /*!< Previous-track button pressed */
     void (*next_cb)(void *ctx);                        /*!< Next-track button pressed */
     void *prev_next_ctx;                               /*!< Context passed to prev_cb and next_cb */
+    esp_err_t (*power_request_cb)(bool enabled, void *ctx); /*!< Queue only; never block LVGL */
+    void (*power_status_cb)(bt_power_status_t *status, void *ctx); /*!< Non-blocking snapshot */
+    void *power_ctx;
 } bt_ui_config_t;
 
 /**
@@ -72,7 +76,7 @@ esp_err_t bt_ui_init(void);
 /**
  * @brief  Create the full BT UI widget tree on the active screen.
  *
- *         Reuses the official media controls, adds a Debug tab and a volume bar.
+ *         Reuses official media controls, adds Debug/System tabs and a volume bar.
  *         The phone tab is present only when the corresponding role is enabled.
  *         Starts the internal cover-art task; diagnostics use the LVGL timer.
  *
@@ -92,7 +96,7 @@ bt_ui_t *bt_ui_create(const char *device_name, const bt_ui_config_t *config);
  * @param[in]  connected  Connection state reported by the Bluetooth callback.
  * @param[in]  addr       Six-byte peer address, copied before returning.
  *
- *         Keep both tabs accessible while disconnected for fault diagnosis.
+ *         Keep all tabs accessible while disconnected for fault diagnosis.
  */
 void bt_ui_set_connected(bt_ui_t *ui, bool connected, const uint8_t addr[6]);
 

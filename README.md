@@ -124,3 +124,8 @@ Debug 页提供各协议模块的独立开关与 SD 文本日志保存设置，�
 页面、现有配置迁移与上板步骤见 [UI 指南](docs/UI_GUIDE.md)，模块映射、SD 限制和
 框架扩展见 [Debug 指南](docs/DEBUG_GUIDE.md)。双 framebuffer 抗撕裂、真实 Cover Art、
 日韩字库和播放图标的实现及板端验收见 [显示与 Media 指南](docs/MEDIA_DISPLAY_GUIDE.md)。
+
+System 页可手动关闭/重开蓝牙，无屏版使用 `bt_power off/on/status`；界面和日志
+设置保持运行。适配当前 Classic Sink，不能保证恢复所有协议栈死锁或初始化异常。
+使用与硬件验收见 [蓝牙启停指南](docs/BLUETOOTH_POWER_GUIDE.md)，本地构建/测试
+边界见 [启停验证记录](docs/BLUETOOTH_POWER_VERIFICATION.md)。

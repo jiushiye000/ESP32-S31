@@ -12,7 +12,7 @@ function(idf_component_register)
             message(FATAL_ERROR "Selected source does not exist: ${source}")
         endif()
     endforeach()
-    foreach(source bt_debug.c bt_debug_policy.c bt_debug_storage.c)
+    foreach(source bt_debug.c bt_debug_policy.c bt_debug_storage.c bt_power.c bt_power_sequence.c)
         if(NOT "${source}" IN_LIST component_SRCS)
             message(FATAL_ERROR "Both profiles must compile debug backend: ${source}")
         endif()
@@ -26,4 +26,14 @@ function(idf_component_register)
 endfunction()
 
 include("${demo_main}/CMakeLists.txt")
+# Structural guard only: the backend's fake-SDK tests do not exercise GMF reads.
+file(READ "${demo_main}/stream_proc.c" stream_source)
+foreach(required
+        "esp_gmf_pipeline_get_head_el(bt2codec_pipe, &decoder)"
+        "esp_gmf_port_set_wait_ticks(ESP_GMF_ELEMENT_GET(decoder)->in, pdMS_TO_TICKS(50))")
+    string(FIND "${stream_source}" "${required}" found)
+    if(found EQUAL -1)
+        message(FATAL_ERROR "Bluetooth reader must use a finite stop-safe timeout: ${required}")
+    endif()
+endforeach()
 message(STATUS "Classic UI=${TEST_UI}: selected sources exist")

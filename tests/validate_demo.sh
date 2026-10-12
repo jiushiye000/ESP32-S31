@@ -75,5 +75,6 @@ done
 cmake -DTEST_UI=OFF -P "${root_dir}/tests/check_ui_sources.cmake"
 cmake -DTEST_UI=ON -P "${root_dir}/tests/check_ui_sources.cmake"
 bash "${root_dir}/tests/test_debug.sh"
+bash "${root_dir}/tests/test_bt_power.sh"
 
 printf 'demo structure and configuration checks passed\n'

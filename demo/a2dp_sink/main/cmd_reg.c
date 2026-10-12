@@ -30,6 +30,49 @@
 #include "dev_audio_codec.h"
 #include "cmd_reg.h"
 #include "bt_debug.h"
+#include "bt_power.h"
+
+static int guarded_bt_command(void *context, int argc, char **argv)
+{
+    if (!bt_power_command_begin()) {
+        printf("Bluetooth is OFF/busy/error; use bt_power status or bt_power off\n");
+        return 1;
+    }
+    int ret = (*(esp_console_cmd_func_t *)context)(argc, argv);
+    bt_power_command_end();
+    return ret;
+}
+static esp_err_t register_bt_command(const esp_console_cmd_t *command)
+{
+    static esp_console_cmd_func_t handlers[32];
+    static size_t count;
+    if (count == sizeof(handlers) / sizeof(*handlers) || !command->func) return ESP_ERR_NO_MEM;
+    handlers[count] = command->func;
+    esp_console_cmd_t guarded = *command;
+    guarded.func = NULL;
+    guarded.func_w_context = guarded_bt_command;
+    guarded.context = &handlers[count++];
+    return esp_console_cmd_register(&guarded);
+}
+
+static int power_config(int argc, char **argv)
+{
+    if (argc == 1 || (argc == 2 && !strcmp(argv[1], "status"))) {
+        bt_power_status_t s;
+        bt_power_get_status(&s);
+        printf("Bluetooth: %s | controller=%s | step=%s | error=%s\n",
+               bt_power_state_name(s.state), s.controller_enabled ? "enabled" : "disabled",
+               bt_power_step_name(s.step), esp_err_to_name(s.error));
+        return 0;
+    }
+    if (argc == 2 && (!strcmp(argv[1], "on") || !strcmp(argv[1], "off"))) {
+        esp_err_t err = bt_power_request(!strcmp(argv[1], "on"));
+        printf("Bluetooth request: %s (queued, check status for completion)\n", esp_err_to_name(err));
+        return err == ESP_OK ? 0 : 1;
+    }
+    printf("Usage: bt_power [status|on|off]; ERROR: retry off before on\n");
+    return 1;
+}
 
 static uint8_t target_device_bda[6] = {0};
 #if CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_A2DP_SOURCE)
@@ -576,7 +619,7 @@ void cli_register_bt(void)
         .hint = NULL,
         .func = &cmd_playback_play,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&play_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&play_cmd));
 
     const esp_console_cmd_t pause_cmd = {
         .command = "pause",
@@ -584,7 +627,7 @@ void cli_register_bt(void)
         .hint = NULL,
         .func = &cmd_playback_pause,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&pause_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&pause_cmd));
 
     const esp_console_cmd_t stop_cmd = {
         .command = "stop",
@@ -592,7 +635,7 @@ void cli_register_bt(void)
         .hint = NULL,
         .func = &cmd_playback_stop,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&stop_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&stop_cmd));
 
     const esp_console_cmd_t next_cmd = {
         .command = "next",
@@ -600,7 +643,7 @@ void cli_register_bt(void)
         .hint = NULL,
         .func = &cmd_playback_next,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&next_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&next_cmd));
 
     const esp_console_cmd_t prev_cmd = {
         .command = "prev",
@@ -608,7 +651,7 @@ void cli_register_bt(void)
         .hint = NULL,
         .func = &cmd_playback_prev,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&prev_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&prev_cmd));
 
     const esp_console_cmd_t metadata_cmd = {
         .command = "metadata",
@@ -616,7 +659,7 @@ void cli_register_bt(void)
         .hint = "<mask>",
         .func = &cmd_playback_metadata,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&metadata_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&metadata_cmd));
 
     const esp_console_cmd_t vol_set_cmd = {
         .command = "vol_set",
@@ -624,7 +667,7 @@ void cli_register_bt(void)
         .hint = "<volume>",
         .func = &cmd_volume_set,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&vol_set_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&vol_set_cmd));
 
     const esp_console_cmd_t vol_up_cmd = {
         .command = "vol_up",
@@ -632,7 +675,7 @@ void cli_register_bt(void)
         .hint = NULL,
         .func = &cmd_volume_up,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&vol_up_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&vol_up_cmd));
 
     const esp_console_cmd_t vol_down_cmd = {
         .command = "vol_down",
@@ -640,7 +683,7 @@ void cli_register_bt(void)
         .hint = NULL,
         .func = &cmd_volume_down,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&vol_down_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&vol_down_cmd));
 
 #if CONFIG_BT_CLASSIC_ENABLED && CONFIG_GMF_EXAMPLE_AUDIO_TECH_CLASSIC
     {
@@ -650,7 +693,7 @@ void cli_register_bt(void)
             .hint = "<mac_address>",
             .func = &cmd_connect_device,
         };
-        ESP_ERROR_CHECK(esp_console_cmd_register(&connect_cmd));
+        ESP_ERROR_CHECK(register_bt_command(&connect_cmd));
     }
 
     {
@@ -660,7 +703,7 @@ void cli_register_bt(void)
             .hint = NULL,
             .func = &cmd_disconnect_device,
         };
-        ESP_ERROR_CHECK(esp_console_cmd_register(&disconnect_cmd));
+        ESP_ERROR_CHECK(register_bt_command(&disconnect_cmd));
     }
 
     {
@@ -670,7 +713,7 @@ void cli_register_bt(void)
             .hint = "<mac_address>",
             .func = &cmd_hf_connect,
         };
-        ESP_ERROR_CHECK(esp_console_cmd_register(&hf_connect_cmd));
+        ESP_ERROR_CHECK(register_bt_command(&hf_connect_cmd));
     }
 
     {
@@ -680,7 +723,7 @@ void cli_register_bt(void)
             .hint = NULL,
             .func = &cmd_hf_disconnect,
         };
-        ESP_ERROR_CHECK(esp_console_cmd_register(&hf_disconnect_cmd));
+        ESP_ERROR_CHECK(register_bt_command(&hf_disconnect_cmd));
     }
 #endif  /* CONFIG_BT_CLASSIC_ENABLED && CONFIG_GMF_EXAMPLE_AUDIO_TECH_CLASSIC */
 
@@ -690,7 +733,7 @@ void cli_register_bt(void)
         .hint = NULL,
         .func = &cmd_call_answer,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&call_answer_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&call_answer_cmd));
 
     const esp_console_cmd_t call_reject_cmd = {
         .command = "call_reject",
@@ -698,7 +741,7 @@ void cli_register_bt(void)
         .hint = NULL,
         .func = &cmd_call_reject,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&call_reject_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&call_reject_cmd));
 
     const esp_console_cmd_t call_dial_cmd = {
         .command = "call_dial",
@@ -706,7 +749,7 @@ void cli_register_bt(void)
         .hint = "[number]",
         .func = &cmd_call_dial,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&call_dial_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&call_dial_cmd));
 
     const esp_console_cmd_t pb_fetch_cmd = {
         .command = "pb_fetch",
@@ -714,7 +757,7 @@ void cli_register_bt(void)
         .hint = "<target> [start_idx] [count]",
         .func = &cmd_pb_fetch,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&pb_fetch_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&pb_fetch_cmd));
 
 #if CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_A2DP_SOURCE)
     const esp_console_cmd_t start_discovery_cmd = {
@@ -723,7 +766,7 @@ void cli_register_bt(void)
         .hint = "[device_name]",
         .func = &cmd_start_discovery,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&start_discovery_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&start_discovery_cmd));
 
     const esp_console_cmd_t stop_discovery_cmd = {
         .command = "stop_discovery",
@@ -731,7 +774,7 @@ void cli_register_bt(void)
         .hint = NULL,
         .func = &cmd_stop_discovery,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&stop_discovery_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&stop_discovery_cmd));
 
     const esp_console_cmd_t start_media_cmd = {
         .command = "start_media",
@@ -739,7 +782,7 @@ void cli_register_bt(void)
         .hint = NULL,
         .func = &cmd_start_media,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&start_media_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&start_media_cmd));
 
     const esp_console_cmd_t stop_media_cmd = {
         .command = "stop_media",
@@ -747,7 +790,7 @@ void cli_register_bt(void)
         .hint = NULL,
         .func = &cmd_stop_media,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&stop_media_cmd));
+    ESP_ERROR_CHECK(register_bt_command(&stop_media_cmd));
 #endif  /* CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_A2DP_SOURCE) */
 
 #if CONFIG_GMF_EXAMPLE_AUDIO_TECH_LE
@@ -758,7 +801,7 @@ void cli_register_bt(void)
             .hint = "[timeout_ms]",
             .func = &cmd_le_scan_start,
         };
-        ESP_ERROR_CHECK(esp_console_cmd_register(&le_scan_start_cmd));
+        ESP_ERROR_CHECK(register_bt_command(&le_scan_start_cmd));
     }
 
     {
@@ -768,7 +811,7 @@ void cli_register_bt(void)
             .hint = NULL,
             .func = &cmd_le_scan_stop,
         };
-        ESP_ERROR_CHECK(esp_console_cmd_register(&le_scan_stop_cmd));
+        ESP_ERROR_CHECK(register_bt_command(&le_scan_stop_cmd));
     }
 
     {
@@ -778,7 +821,7 @@ void cli_register_bt(void)
             .hint = "<addr_type> <mac_address> [timeout_ms]",
             .func = &cmd_le_connect,
         };
-        ESP_ERROR_CHECK(esp_console_cmd_register(&le_connect_cmd));
+        ESP_ERROR_CHECK(register_bt_command(&le_connect_cmd));
     }
 
     {
@@ -788,7 +831,7 @@ void cli_register_bt(void)
             .hint = NULL,
             .func = &cmd_le_disconnect,
         };
-        ESP_ERROR_CHECK(esp_console_cmd_register(&le_disconnect_cmd));
+        ESP_ERROR_CHECK(register_bt_command(&le_disconnect_cmd));
     }
 #endif  /* CONFIG_GMF_EXAMPLE_AUDIO_TECH_LE */
 }
@@ -896,6 +939,12 @@ static int debug_config(int argc, char **argv)
 void cli_register_sys()
 {
     static const esp_console_cmd_t cmds[] = {
+        {
+            .command = "bt_power",
+            .help = "Bluetooth ON/OFF without resetting the display; Classic Sink adapter",
+            .hint = "[status|on|off]",
+            .func = power_config,
+        },
         {
             .command = "debug",
             .help = "Configure module debug / async SD logging; shared with the screen",

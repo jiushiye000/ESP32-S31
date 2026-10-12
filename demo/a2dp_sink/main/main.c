@@ -54,6 +54,7 @@
 #include "codec_defs.h"
 #include "bt_debug.h"
 #include "bt_metadata_text.h"
+#include "bt_power.h"
 
 #ifdef CONFIG_GMF_EXAMPLE_A2DP_SOURCE
 #define A2DP_SRC_SEND_TASK_CORE_ID     1
@@ -244,7 +245,9 @@ static void on_dial_cb(const char *number, void *ctx)
     if (number == NULL || number[0] == '\0') {
         return;
     }
+    if (!bt_power_command_begin()) return;
     esp_err_t ret = esp_bt_audio_call_dial(number);
+    bt_power_command_end();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Dial failed: %s", esp_err_to_name(ret));
     }
@@ -253,7 +256,9 @@ static void on_dial_cb(const char *number, void *ctx)
 static void on_end_call_cb(void *ctx)
 {
     (void)ctx;
+    if (!bt_power_command_begin()) return;
     esp_err_t ret = esp_bt_audio_call_reject(0);
+    bt_power_command_end();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "End call failed: %s", esp_err_to_name(ret));
     }
@@ -262,7 +267,9 @@ static void on_end_call_cb(void *ctx)
 static void on_answer_call_cb(void *ctx)
 {
     (void)ctx;
+    if (!bt_power_command_begin()) return;
     esp_err_t ret = esp_bt_audio_call_answer(0);
+    bt_power_command_end();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Answer call failed: %s", esp_err_to_name(ret));
     }
@@ -271,7 +278,9 @@ static void on_answer_call_cb(void *ctx)
 static esp_err_t on_play_pause_cb(bool want_play, void *ctx)
 {
     (void)ctx;
+    if (!bt_power_command_begin()) return ESP_ERR_INVALID_STATE;
     esp_err_t ret = want_play ? esp_bt_audio_playback_play() : esp_bt_audio_playback_pause();
+    bt_power_command_end();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Playback %s failed: %s", want_play ? "play" : "pause", esp_err_to_name(ret));
     }
@@ -281,7 +290,9 @@ static esp_err_t on_play_pause_cb(bool want_play, void *ctx)
 static void on_prev_cb(void *ctx)
 {
     (void)ctx;
+    if (!bt_power_command_begin()) return;
     esp_err_t ret = esp_bt_audio_playback_prev();
+    bt_power_command_end();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Playback prev failed: %s", esp_err_to_name(ret));
     }
@@ -290,10 +301,22 @@ static void on_prev_cb(void *ctx)
 static void on_next_cb(void *ctx)
 {
     (void)ctx;
+    if (!bt_power_command_begin()) return;
     esp_err_t ret = esp_bt_audio_playback_next();
+    bt_power_command_end();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Playback next failed: %s", esp_err_to_name(ret));
     }
+}
+static esp_err_t on_power_cb(bool enabled, void *ctx)
+{
+    (void)ctx;
+    return bt_power_request(enabled);
+}
+static void on_power_status(bt_power_status_t *status, void *ctx)
+{
+    (void)ctx;
+    bt_power_get_status(status);
 }
 #endif  /* CONFIG_EXAMPLE_BT_UI_ENABLE */
 
@@ -433,11 +456,13 @@ static void playback_status_chg_proc(esp_bt_audio_event_playback_st_t *event_dat
             bt_ui_update_track(ui, "", "");
             bt_ui_post_cover(ui, NULL, 0);
 #endif
+            if (!bt_power_command_begin()) break;
             esp_bt_audio_playback_request_metadata(ESP_BT_AUDIO_PLAYBACK_METADATA_TITLE |
                                                    ESP_BT_AUDIO_PLAYBACK_METADATA_ARTIST |
                                                    ESP_BT_AUDIO_PLAYBACK_METADATA_ALBUM |
                                                    ESP_BT_AUDIO_PLAYBACK_METADATA_GENRE |
                                                    ESP_BT_AUDIO_PLAYBACK_METADATA_COVER_ART);
+            bt_power_command_end();
             break;
         case ESP_BT_AUDIO_PLAYBACK_EVENT_PLAY_POS_CHANGED:
             ESP_LOGI(TAG, "Playback position changed: %d", event_data->evt_param.position);
@@ -480,6 +505,8 @@ static void playback_metadata_proc(esp_bt_audio_event_playback_metadata_t *event
 
 static void bt_audio_event_cb(esp_bt_audio_event_t event, void *event_data, void *user_data)
 {
+    if (!bt_power_events_allowed() && event != ESP_BT_AUDIO_EVENT_STREAM_STATE_CHG &&
+        event != ESP_BT_AUDIO_EVENT_CONNECTION_STATE_CHG) return;
     switch (event) {
         case ESP_BT_AUDIO_EVENT_DISCOVERY_STATE_CHG: {
             esp_bt_audio_event_discovery_st_t *discovery_state = (esp_bt_audio_event_discovery_st_t *)event_data;
@@ -512,16 +539,25 @@ static void bt_audio_event_cb(esp_bt_audio_event_t event, void *event_data, void
                 bt_ui_set_connected(ui, true, conn_st->addr);
 #endif  /* CONFIG_EXAMPLE_BT_UI_ENABLE */
 #if CONFIG_BT_CLASSIC_ENABLED && (defined(CONFIG_GMF_EXAMPLE_A2DP_SOURCE) || defined(CONFIG_GMF_EXAMPLE_A2DP_SINK))
-                esp_bt_audio_classic_set_scan_mode(false, false);
+                if (bt_power_command_begin()) {
+                    esp_bt_audio_classic_set_scan_mode(false, false);
+                    bt_power_command_end();
+                }
 #endif  /* CONFIG_BT_CLASSIC_ENABLED && (defined(CONFIG_GMF_EXAMPLE_A2DP_SOURCE) || defined(CONFIG_GMF_EXAMPLE_A2DP_SINK)) */
 #if CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_PBAP_PCE)
                 esp_bt_audio_classic_connect(ESP_BT_AUDIO_CLASSIC_ROLE_PBAP_PCE, conn_st->addr);
 #endif  /* CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_PBAP_PCE) */
             } else {
 #if CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_A2DP_SOURCE)
-                esp_bt_audio_classic_set_scan_mode(true, false);
+                if (bt_power_command_begin()) {
+                    esp_bt_audio_classic_set_scan_mode(true, false);
+                    bt_power_command_end();
+                }
 #elif CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_A2DP_SINK)
-                esp_bt_audio_classic_set_scan_mode(true, true);
+                if (bt_power_command_begin()) {
+                    esp_bt_audio_classic_set_scan_mode(true, true);
+                    bt_power_command_end();
+                }
 #endif  /* CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_A2DP_SOURCE) */
 #if CONFIG_EXAMPLE_BT_UI_ENABLE
                 bt_ui_set_connected(ui, false, conn_st->addr);
@@ -540,7 +576,10 @@ static void bt_audio_event_cb(esp_bt_audio_event_t event, void *event_data, void
         }
         case ESP_BT_AUDIO_EVENT_MEDIA_CTRL_CMD: {
             esp_bt_audio_event_media_ctrl_t *media_ctrl_cmd = (esp_bt_audio_event_media_ctrl_t *)event_data;
-            media_ctrl_cmd_proc(media_ctrl_cmd->cmd);
+            if (bt_power_command_begin()) {
+                media_ctrl_cmd_proc(media_ctrl_cmd->cmd);
+                bt_power_command_end();
+            }
             break;
         }
         case ESP_BT_AUDIO_EVENT_PLAYBACK_STATUS_CHG: {
@@ -677,6 +716,22 @@ static void bt_audio_event_cb(esp_bt_audio_event_t event, void *event_data, void
     }
 }
 
+static esp_err_t activate_bluetooth(void)
+{
+    esp_err_t err = ESP_OK;
+#if CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_A2DP_SOURCE)
+    err = esp_bt_audio_classic_set_scan_mode(true, false);
+#elif CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_A2DP_SINK)
+    err = esp_bt_audio_classic_set_scan_mode(true, true);
+#endif
+    if (err != ESP_OK) return err;
+    return esp_bt_audio_playback_reg_notifications(ESP_BT_AUDIO_PLAYBACK_EVENT_PLAY_STATUS_CHANGE |
+        ESP_BT_AUDIO_PLAYBACK_EVENT_TRACK_CHANGE | ESP_BT_AUDIO_PLAYBACK_EVENT_TRACK_REACHED_END |
+        ESP_BT_AUDIO_PLAYBACK_EVENT_TRACK_REACHED_START | ESP_BT_AUDIO_PLAYBACK_EVENT_PLAY_POS_CHANGED |
+        ESP_BT_AUDIO_PLAYBACK_EVENT_NOW_PLAYING_CHANGE | ESP_BT_AUDIO_PLAYBACK_EVENT_AVAILABLE_PLAYERS_CHANGE |
+        ESP_BT_AUDIO_PLAYBACK_EVENT_ADDRESSED_PLAYER_CHANGE);
+}
+
 void app_main()
 {
     /* Initialize NVS flash which is used by bluetooth */
@@ -736,6 +791,8 @@ void app_main()
         .prev_cb = on_prev_cb,
         .next_cb = on_next_cb,
         .prev_next_ctx = NULL,
+        .power_request_cb = on_power_cb,
+        .power_status_cb = on_power_status,
     };
     ESP_ERROR_CHECK(bt_ui_init());
     ui = bt_ui_create(BT_UI_DEVICE_NAME, &ui_cfg);
@@ -767,7 +824,7 @@ void app_main()
     /* Initialize Bluetooth module */
     void *host_config = NULL;
 #if CONFIG_BT_NIMBLE_ENABLED
-    esp_bt_audio_host_nimble_cfg_t host_cfg = ESP_BT_AUDIO_HOST_NIMBLE_CFG_DEFAULT();
+    static esp_bt_audio_host_nimble_cfg_t host_cfg = ESP_BT_AUDIO_HOST_NIMBLE_CFG_DEFAULT();
 #if CONFIG_EXAMPLE_BT_UI_ENABLE
     snprintf(host_cfg.dev_name, sizeof(host_cfg.dev_name), "%s", BT_UI_DEVICE_NAME);
 #endif  /* CONFIG_EXAMPLE_BT_UI_ENABLE */
@@ -776,7 +833,7 @@ void app_main()
 #endif  /* CONFIG_GMF_EXAMPLE_LE_COORDINATE_SET_SIZE <= 1 */
     host_config = &host_cfg;
 #elif CONFIG_BT_BLUEDROID_ENABLED
-    esp_bt_audio_host_bluedroid_cfg_t host_cfg = ESP_BT_AUDIO_HOST_BLUEDROID_CFG_DEFAULT();
+    static esp_bt_audio_host_bluedroid_cfg_t host_cfg = ESP_BT_AUDIO_HOST_BLUEDROID_CFG_DEFAULT();
 #if CONFIG_EXAMPLE_BT_UI_ENABLE
     snprintf(host_cfg.dev_name, sizeof(host_cfg.dev_name), "%s", BT_UI_DEVICE_NAME);
 #endif  /* CONFIG_EXAMPLE_BT_UI_ENABLE */
@@ -784,7 +841,8 @@ void app_main()
     host_config = &host_cfg;
 #endif  /* CONFIG_BT_NIMBLE_ENABLED */
 
-    esp_bt_audio_config_t bt_config = {
+    static esp_bt_audio_config_t bt_config;
+    bt_config = (esp_bt_audio_config_t){
         .host_config = host_config,
         .event_cb = bt_audio_event_cb,
         .event_user_ctx = NULL,
@@ -831,20 +889,14 @@ void app_main()
     ESP_LOGI(TAG, "  Coordinate set rank: %d", CONFIG_GMF_EXAMPLE_LE_COORDINATE_SET_RANK);
     ESP_LOGI(TAG, "  PACS sink locations: %s", LE_LOCATION == ESP_BT_AUDIO_AUDIO_LOC_FRONT_LEFT ? "Front left" : "Front right");
 #endif  /* CONFIG_GMF_EXAMPLE_AUDIO_TECH_LE */
+#if BT_POWER_SUPPORTED
+    ESP_ERROR_CHECK(bt_power_prepare(&bt_config, btmode, activate_bluetooth));
+#endif
     ESP_ERROR_CHECK(esp_bt_audio_init(&bt_config));
-#if CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_A2DP_SOURCE)
-    ESP_ERROR_CHECK(esp_bt_audio_classic_set_scan_mode(true, false));
-#elif CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_A2DP_SINK)
-    ESP_ERROR_CHECK(esp_bt_audio_classic_set_scan_mode(true, true));
-#endif  /* CONFIG_BT_CLASSIC_ENABLED && defined(CONFIG_GMF_EXAMPLE_A2DP_SOURCE) */
-    ESP_ERROR_CHECK(esp_bt_audio_playback_reg_notifications(ESP_BT_AUDIO_PLAYBACK_EVENT_PLAY_STATUS_CHANGE |
-                                                            ESP_BT_AUDIO_PLAYBACK_EVENT_TRACK_CHANGE |
-                                                            ESP_BT_AUDIO_PLAYBACK_EVENT_TRACK_REACHED_END |
-                                                            ESP_BT_AUDIO_PLAYBACK_EVENT_TRACK_REACHED_START |
-                                                            ESP_BT_AUDIO_PLAYBACK_EVENT_PLAY_POS_CHANGED |
-                                                            ESP_BT_AUDIO_PLAYBACK_EVENT_NOW_PLAYING_CHANGE |
-                                                            ESP_BT_AUDIO_PLAYBACK_EVENT_AVAILABLE_PLAYERS_CHANGE |
-                                                            ESP_BT_AUDIO_PLAYBACK_EVENT_ADDRESSED_PLAYER_CHANGE));
+    ESP_ERROR_CHECK(activate_bluetooth());
+#if BT_POWER_SUPPORTED
+    ESP_ERROR_CHECK(bt_power_ready());
+#endif
     /* Initialize console for user interaction */
     cli_init();
 }
