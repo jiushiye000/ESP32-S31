@@ -17,3 +17,8 @@ target_include_directories(test_ui PRIVATE stubs "${repo}/demo/a2dp_sink/main"
 target_compile_options(test_ui PRIVATE -g --coverage -ffunction-sections -fdata-sections -Wall -Wextra)
 target_link_options(test_ui PRIVATE --coverage -Wl,--gc-sections)
 target_link_libraries(test_ui PRIVATE lvgl m)
+option(UI_HOST_SANITIZERS "Check app buffer accesses and undefined behavior" OFF)
+if(UI_HOST_SANITIZERS)
+    target_compile_options(test_ui PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(test_ui PRIVATE -fsanitize=address,undefined)
+endif()

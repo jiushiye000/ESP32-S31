@@ -3,9 +3,14 @@
 #include "platform.h"
 #include "jpeg_decoder.h"
 #include "bt_debug.h"
+#include "bt_ui.h"
 struct host_queue { unsigned length, size, count; unsigned char data[128]; };
 unsigned host_pending_covers;
 bool host_decode_fail, host_decode_locked;
+unsigned host_decode_calls;
+void *host_during_decode;
+lvgl_port_display_cfg_t host_display;
+lvgl_port_display_rgb_cfg_t host_rgb;
 static void (*cover_task)(void *);
 static void *cover_arg;
 static jmp_buf task_exit;
@@ -51,11 +56,30 @@ esp_err_t esp_jpeg_get_image_info(esp_jpeg_image_cfg_t *cfg, esp_jpeg_image_outp
 }
 esp_err_t esp_jpeg_decode(esp_jpeg_image_cfg_t *cfg, esp_jpeg_image_output_t *out)
 {
+    ++host_decode_calls;
     host_decode_locked = locked != 0;
+    if (host_during_decode) { bt_ui_post_cover(host_during_decode, NULL, 0); host_during_decode = NULL; }
     if (host_decode_fail) return ESP_FAIL;
     memset(cfg->outbuf, 0x7f, 2048);
     *out = (esp_jpeg_image_output_t){.width = 32, .height = 32, .output_len = 2048}; return ESP_OK;
 }
+esp_err_t esp_board_manager_get_device_handle(const char *name, void **handle)
+{
+    if (strcmp(name, ESP_BOARD_DEVICE_NAME_DISPLAY_LCD)) return ESP_FAIL;
+    static dev_display_lcd_handles_t lcd; *handle = &lcd; return ESP_OK;
+}
+esp_err_t esp_board_manager_get_device_config(const char *name, void **config)
+{
+    (void)name; static dev_display_lcd_config_t lcd = {.sub_type = "rgb", .lcd_width = 800, .lcd_height = 480,
+        .sub_cfg.rgb.panel_config = {.num_fbs = 2}}; *config = &lcd; return ESP_OK;
+}
+esp_err_t lvgl_port_init(const lvgl_port_cfg_t *cfg) { (void)cfg; return ESP_OK; }
+lv_display_t *lvgl_port_add_disp(const lvgl_port_display_cfg_t *cfg) { host_display = *cfg; return lv_display_get_default(); }
+lv_display_t *lvgl_port_add_disp_rgb(const lvgl_port_display_cfg_t *cfg, const lvgl_port_display_rgb_cfg_t *rgb)
+{
+    host_rgb = *rgb; return lvgl_port_add_disp(cfg);
+}
+void *lvgl_port_add_touch(const lvgl_port_touch_cfg_t *cfg) { (void)cfg; return NULL; }
 bool bt_debug_supported(size_t i) { return i < 17; }
 bool bt_debug_enabled(size_t i) { (void)i; return false; }
 bool bt_debug_effective(size_t i) { (void)i; return false; }

@@ -84,3 +84,7 @@ void host_run_cover_task(void);
 extern unsigned host_pending_covers;
 extern bool host_decode_fail;
 extern bool host_decode_locked;
+extern unsigned host_decode_calls;
+extern void *host_during_decode;
+extern lvgl_port_display_cfg_t host_display;
+extern lvgl_port_display_rgb_cfg_t host_rgb;

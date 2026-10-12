@@ -4,9 +4,22 @@
 #include <string.h>
 #include "platform.h"
 #include "bt_ui.h"
+#include "bt_metadata_text.h"
+#include "src/draw/snapshot/lv_snapshot.h"
 static bool requested;
 static unsigned requests;
-static void accepted(bool play, void *ctx) { (void)ctx; requested = play; ++requests; }
+static esp_err_t result;
+static esp_err_t accepted(bool play, void *ctx) { (void)ctx; requested = play; ++requests; return result; }
+/* SOF0 header only; the fake decoder isolates widget/ownership/lock behavior. */
+static const uint8_t fixture[] = {0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 32, 0, 32, 1, 1, 0x11, 0};
+static lv_obj_t *find_cover(lv_obj_t *root)
+{
+    if (lv_obj_check_type(root, &lv_image_class) && lv_obj_get_width(root) == 340) return root;
+    for (unsigned i = 0; i < lv_obj_get_child_count(root); ++i) {
+        lv_obj_t *found = find_cover(lv_obj_get_child(root, i)); if (found) return found;
+    }
+    return NULL;
+}
 static lv_obj_t *find_label(lv_obj_t *root, const char *text)
 {
     if (lv_obj_check_type(root, &lv_label_class) && !strcmp(lv_label_get_text(root), text)) return root;
@@ -14,6 +27,20 @@ static lv_obj_t *find_label(lv_obj_t *root, const char *text)
         lv_obj_t *found = find_label(lv_obj_get_child(root, i), text); if (found) return found;
     }
     return NULL;
+}
+static void snapshot(lv_obj_t *screen, const char *path)
+{
+    lv_draw_buf_t *buf = lv_snapshot_take(screen, LV_COLOR_FORMAT_RGB888); assert(buf);
+    FILE *file = fopen(path, "wb"); assert(file);
+    fprintf(file, "P6\n%u %u\n255\n", buf->header.w, buf->header.h);
+    for (unsigned y = 0; y < buf->header.h; ++y) {
+        const uint8_t *row = buf->data + y * buf->header.stride;
+        for (unsigned x = 0; x < buf->header.w; ++x) {
+            uint8_t rgb[] = {row[x * 3 + 2], row[x * 3 + 1], row[x * 3]};
+            assert(fwrite(rgb, 1, 3, file) == 3);
+        }
+    }
+    assert(fclose(file) == 0); lv_draw_buf_destroy(buf);
 }
 static double linear(unsigned value)
 {
@@ -23,6 +50,7 @@ static double light(lv_color_t c) { return .2126 * linear(c.red) + .7152 * linea
 int main(int argc, char **argv)
 {
     assert(argc == 2);
+    setbuf(stdout, NULL);
     lv_init();
     lv_display_t *display = lv_display_create(800, 480);
     assert(display);
@@ -38,15 +66,17 @@ int main(int argc, char **argv)
         double ratio = (fmax(text, bg) + .05) / (fmin(text, bg) + .05);
         printf("Actual Debug card text/background contrast: %.2f:1\n", ratio);
         assert(ratio >= 4.5);
-    } else if (!strcmp(argv[1], "play")) {
+    } else if (!strcmp(argv[1], "play") || !strcmp(argv[1], "play_reject")) {
         lv_obj_t *play = find_label(screen, LV_SYMBOL_PLAY); assert(play);
         lv_obj_t *button = lv_obj_get_parent(play);
+        result = !strcmp(argv[1], "play_reject") ? ESP_FAIL : ESP_OK;
         if (lv_obj_has_flag(button, LV_OBJ_FLAG_CHECKABLE)) {
             lv_obj_add_state(button, LV_STATE_CHECKED);
             lv_obj_send_event(button, LV_EVENT_VALUE_CHANGED, NULL);
         } else lv_obj_send_event(button, LV_EVENT_CLICKED, NULL);
         assert(requests == 1 && requested);
-        assert(!strcmp(lv_label_get_text(play), LV_SYMBOL_PAUSE));
+        assert(!strcmp(lv_label_get_text(play), result == ESP_OK ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY));
+        assert(lv_obj_has_state(button, LV_STATE_CHECKED) == (result == ESP_OK));
         bt_ui_update_playback_status(ui, ESP_BT_AUDIO_PLAYBACK_STATUS_PAUSED);
         assert(!strcmp(lv_label_get_text(play), LV_SYMBOL_PLAY));
     } else if (!strcmp(argv[1], "fonts")) {
@@ -64,10 +94,82 @@ int main(int argc, char **argv)
         assert(host_pending_covers != 0);
         host_run_cover_task();
     } else if (!strcmp(argv[1], "decode_lock")) {
-        const uint8_t fixture[] = {1, 2, 3};
         bt_ui_post_cover(ui, fixture, sizeof(fixture));
         host_run_cover_task();
         assert(!host_decode_locked);
+        assert(host_decode_calls == 1);
+        assert(!lv_obj_has_flag(find_cover(screen), LV_OBJ_FLAG_HIDDEN));
+    } else if (!strcmp(argv[1], "cover_stale")) {
+        bt_ui_post_cover(ui, fixture, sizeof(fixture));
+        bt_ui_post_cover(ui, NULL, 0);
+        host_run_cover_task();
+        assert(host_decode_calls == 0);
+        assert(lv_obj_has_flag(find_cover(screen), LV_OBJ_FLAG_HIDDEN));
+    } else if (!strcmp(argv[1], "cover_decode_stale")) {
+        host_during_decode = ui;
+        bt_ui_post_cover(ui, fixture, sizeof(fixture));
+        host_run_cover_task();
+        assert(host_decode_calls == 1);
+        assert(lv_obj_has_flag(find_cover(screen), LV_OBJ_FLAG_HIDDEN));
+    } else if (!strcmp(argv[1], "cover_failure")) {
+        bt_ui_post_cover(ui, fixture, sizeof(fixture)); host_run_cover_task();
+        host_decode_fail = true;
+        bt_ui_post_cover(ui, fixture, sizeof(fixture)); host_run_cover_task();
+        assert(lv_obj_has_flag(find_cover(screen), LV_OBJ_FLAG_HIDDEN));
+    } else if (!strcmp(argv[1], "cover_bounds")) {
+        bt_ui_post_cover(ui, fixture, 512 * 1024 + 1);
+        assert(host_pending_covers == 0);
+        for (size_t n = 1; n < sizeof(fixture); ++n) {
+            bt_ui_post_cover(ui, fixture, n); host_run_cover_task();
+        }
+        uint8_t invalid[sizeof(fixture)]; memcpy(invalid, fixture, sizeof(invalid));
+        invalid[8] = 0xff; invalid[9] = 0xff;
+        bt_ui_post_cover(ui, invalid, sizeof(invalid)); host_run_cover_task();
+        assert(host_decode_calls == 0);
+    } else if (!strcmp(argv[1], "cover_queue")) {
+        for (unsigned i = 0; i < 6; ++i) bt_ui_post_cover(ui, fixture, sizeof(fixture));
+        assert(host_pending_covers == 2);
+        host_run_cover_task();
+        assert(host_decode_calls == 2);
+        bt_ui_post_cover(ui, NULL, 0); host_run_cover_task();
+        assert(lv_obj_has_flag(find_cover(screen), LV_OBJ_FLAG_HIDDEN));
+    } else if (!strcmp(argv[1], "disconnect")) {
+        bt_ui_update_track(ui, "日本語 한글", "Artist");
+        bt_ui_post_cover(ui, fixture, sizeof(fixture)); host_run_cover_task();
+        uint8_t addr[6] = {0}; bt_ui_set_connected(ui, false, addr); host_run_cover_task();
+        assert(find_label(screen, "No music playing"));
+        assert(!find_label(screen, "Artist"));
+        assert(lv_obj_has_flag(find_cover(screen), LV_OBJ_FLAG_HIDDEN));
+    } else if (!strcmp(argv[1], "utf8")) {
+        char text[8];
+        bt_metadata_text_copy(text, sizeof(text), (const uint8_t *)"a한글b", 8); assert(!strcmp(text, "a한글"));
+        bt_metadata_text_copy(text, 4, (const uint8_t *)"aあ", 4); assert(!strcmp(text, "a"));
+        bt_metadata_text_copy(text, 5, (const uint8_t *)"aあ", 4); assert(!strcmp(text, "aあ"));
+        bt_metadata_text_copy(text, sizeof(text), NULL, 100); assert(!*text);
+        const uint8_t bad[][4] = {{0x80}, {0xe3, 0x81}, {0xed, 0xa0, 0x80}, {0xf4, 0x90, 0x80, 0x80}, {0xc0, 0x80}, {0xe0, 0x80, 0x80}};
+        for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+            bt_metadata_text_copy(text, sizeof(text), bad[i], sizeof(bad[i])); assert(!*text);
+        }
+    } else if (!strcmp(argv[1], "media_layout") || !strcmp(argv[1], "render_media")) {
+        const char *title = "日本語の歌\nひらがな・カタカナ\n한국어 한글";
+        bt_ui_update_track(ui, title, "中文 / 日本語 / 한국어");
+        lv_obj_t *label = find_label(screen, title); assert(label);
+        lv_obj_t *artist = find_label(screen, "中文 / 日本語 / 한국어"); assert(artist);
+        lv_obj_t *tab = lv_obj_get_parent(lv_obj_get_parent(lv_obj_get_parent(label)));
+        lv_obj_t *tabview = lv_obj_get_parent(lv_obj_get_parent(lv_obj_get_parent(tab)));
+        lv_tabview_set_act(tabview, 0, LV_ANIM_OFF);
+        lv_obj_update_layout(screen);
+        lv_area_t title_area, artist_area;
+        lv_obj_get_coords(label, &title_area); lv_obj_get_coords(artist, &artist_area);
+        if (!strcmp(argv[1], "render_media")) snapshot(screen, "/tmp/esp32-media-host.ppm");
+        assert(title_area.y2 < artist_area.y1);
+    } else if (!strcmp(argv[1], "render_debug")) {
+        snapshot(screen, "/tmp/esp32-debug-host.ppm");
+    } else if (!strcmp(argv[1], "antitear")) {
+        assert(bt_ui_init() == ESP_OK);
+        assert(host_display.buffer_size == 800 * 480);
+        assert(host_display.flags.direct_mode && !host_display.flags.full_refresh && !host_display.double_buffer);
+        assert(host_rgb.flags.avoid_tearing && !host_rgb.flags.bb_mode);
     } else assert(!"unknown test");
     puts("UI regression PASS");
 }
