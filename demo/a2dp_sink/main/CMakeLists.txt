@@ -1,7 +1,10 @@
 set(ui_srcs "")
 if(CONFIG_EXAMPLE_BT_UI_ENABLE)
-    list(APPEND ui_srcs "bt_ui/bt_ui.c"
-         "bt_ui/fonts/lv_font_notosanssc_regular_28.c"
+    include("${CMAKE_CURRENT_LIST_DIR}/bt_ui/sources.cmake")
+    foreach(source IN LISTS BT_UI_SOURCES)
+        list(APPEND ui_srcs "bt_ui/${source}")
+    endforeach()
+    list(APPEND ui_srcs "bt_ui/fonts/lv_font_notosanssc_regular_28.c"
          "bt_ui/fonts/lv_font_notosansjk_regular_28.c")
     if(CONFIG_GMF_EXAMPLE_AUDIO_TECH_LE)
         list(APPEND ui_srcs "bt_ui/images/cis_stream_icon.c"

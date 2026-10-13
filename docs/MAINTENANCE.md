@@ -43,10 +43,13 @@ ESP-IDF 使用本机 `v6.1`，ESP-GMF 子模块固定在
 | `demo/a2dp_sink/main/stream_proc.c` | `stream_proc.c` | `e5e67345fdd164cbe87afda6c9d136c3354b18fb` |
 | `demo/a2dp_sink/main/pool_reg.c` | `pool_reg.c` | `029b52b454f35810c278244301b22f03fda372f8` |
 | `demo/a2dp_sink/main/Kconfig.projbuild` | `Kconfig.projbuild` | `109a39166172bd135e76c568656427a5d1607734` |
-| `demo/a2dp_sink/main/bt_ui/bt_ui.c` | `bt_ui/bt_ui.c` | `70378251467fd6a3e90cd1d98954b203e816e86f` |
+| `demo/a2dp_sink/main/bt_ui/` 中 `bt_ui.c`、`ui_*.c` 及其私有类型 | `bt_ui/bt_ui.c` | `70378251467fd6a3e90cd1d98954b203e816e86f` |
 
 `bt_debug*` 和 `bt_power*` 是项目自有模块，不是上游派生文件。
 移动上游派生文件时同步更新此表；不能为了减少 diff 丢掉已验证的安全修复。
+UI 页面的职责、私有接口和图像所有权见
+[UI 维护入口](../demo/a2dp_sink/main/bt_ui/README.md)。上游 UI 升级需要对照这些派生文件，
+不能只合并缩小后的 `bt_ui.c` 而漏掉已经移走的实现。
 
 升级时先比较旧、新上游的目标文件，再以旧上游文件为 base 做三方合并。
 不要直接编辑 `third_party` 或 `managed_components`；确需修改依赖时使用记录版本、
